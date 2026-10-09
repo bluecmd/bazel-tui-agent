@@ -7,6 +7,8 @@ graphs, running actions, build tree, mnemonics, log) on your terminal. When
 output is not a terminal, or on platforms without the native library, Bazel
 behaves exactly as without the agent.
 
+Demo: https://asciinema.org/a/TkLD0Ppus3PXVGHz
+
 <img width="2880" height="1920" alt="image" src="https://github.com/user-attachments/assets/a9f6c598-47ba-4557-b18b-3ad5ede56267" />
 
 ## Enable
