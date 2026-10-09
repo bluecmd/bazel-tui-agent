@@ -1,0 +1,44 @@
+module(name = "bazel_tui_agent", version = "0.1.0")
+
+bazel_dep(name = "rules_java", version = "9.9.0")
+bazel_dep(name = "rules_jvm_external", version = "7.1")
+bazel_dep(name = "rules_rust", version = "0.74.0")
+
+# The terminal renderer is a Rust cdylib embedded in the agent jar.
+rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+rust.toolchain(
+    edition = "2021",
+    versions = ["1.86.0"],
+    # rules_rust asks gcc for lld, and gcc finds linkers only via PATH, which
+    # rustc link actions run without. Use the system bfd linker by prefix.
+    extra_exec_rustc_flags = ["-Clink-arg=-fuse-ld=bfd", "-Clink-arg=-B/usr/bin"],
+    extra_rustc_flags = ["-Clink-arg=-fuse-ld=bfd", "-Clink-arg=-B/usr/bin"],
+)
+use_repo(rust, "rust_toolchains")
+
+register_toolchains("@rust_toolchains//:all")
+
+crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+crate.from_cargo(
+    name = "crates",
+    cargo_lockfile = "//rust:Cargo.lock",
+    manifests = ["//rust:Cargo.toml"],
+)
+use_repo(crate, "crates")
+
+maven = use_extension("@rules_jvm_external//:extensions.bzl", "maven")
+maven.install(
+    artifacts = ["net.bytebuddy:byte-buddy:1.18.14"],
+    repositories = ["https://repo1.maven.org/maven2"],
+)
+use_repo(maven, "maven")
+
+# The agent is compiled against the server jar (A-server.jar) of the Bazel
+# release in .bazelversion, extracted from that release's binary. The jar it
+# produces runs on Bazel 6.6 through 9.3 (see README).
+bazel_server_jar = use_repo_rule("//bazel:server_jar.bzl", "bazel_server_jar")
+
+bazel_server_jar(
+    name = "bazel_server",
+    version_file = "//:.bazelversion",
+)

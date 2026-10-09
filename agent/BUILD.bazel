@@ -1,0 +1,15 @@
+load("//agent:agent.bzl", "hook_agent")
+
+# The renderer, placed where Native.java expects it inside the jar.
+genrule(
+    name = "native_lib",
+    srcs = ["//rust:bazelhook_ui"],
+    outs = ["resources/native/linux-x86_64/libbazelhook_ui.so"],
+    cmd = "cp $$(echo $(locations //rust:bazelhook_ui) | tr ' ' '\\n' | grep '\\.so$$') $@",
+)
+
+# bazel build //agent:agent_deploy.jar -> the -javaagent jar
+hook_agent(
+    name = "agent",
+    server = "@bazel_server//:server",
+)

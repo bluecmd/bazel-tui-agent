@@ -1,0 +1,114 @@
+package bazelhook;
+
+import com.google.common.collect.ImmutableList;
+import com.google.devtools.build.lib.events.Event;
+import com.google.devtools.build.lib.runtime.BlazeModule;
+import com.google.devtools.build.lib.runtime.CommandEnvironment;
+import com.google.devtools.build.lib.runtime.UiOptions;
+import com.google.devtools.common.options.OptionPriority.PriorityCategory;
+import com.google.devtools.common.options.OptionsParser;
+import java.util.Map;
+
+/**
+ * The module injected by {@link Agent}. Per command it decides whether the Rust engine runs:
+ *
+ * <ul>
+ *   <li>the terminal UI, under the same conditions as Bazel's own curses bar (client on a TTY,
+ *       {@code --show_progress}, {@code --curses} not {@code no}); {@code BAZEL_HOOK_UI=0} in the
+ *       client environment disables it, {@code BAZEL_HOOK_ROWS} sets the block height;
+ *   <li>an event trace to the file named by {@code BAZEL_HOOK_TRACE} (test and debugging aid).
+ * </ul>
+ *
+ * Without the native library for this platform, or with neither feature wanted, nothing happens
+ * and Bazel's output is exactly as without the agent. The server JVM keeps running between
+ * commands, so one module instance sees many commands, strictly one at a time.
+ */
+public final class HookModule extends BlazeModule {
+  private EventForwarder forwarder;
+  private TerminalUi ui;
+  private long handle;
+
+  @Override
+  public void beforeCommand(CommandEnvironment env) {
+    try {
+      Map<String, String> clientEnv = env.getClientEnv();
+      String trace = clientEnv.getOrDefault("BAZEL_HOOK_TRACE", "");
+      boolean wantUi = wantsTerminalUi(env, clientEnv);
+      if (!wantUi && trace.isEmpty()) {
+        return;
+      }
+      if (!Native.isAvailable()) {
+        if ("1".equals(clientEnv.get("BAZEL_HOOK_DEBUG"))) {
+          env.getReporter().handle(Event.info("bazel-hook: inactive: " + Native.loadError()));
+        }
+        return;
+      }
+      UiOptions opts = env.getOptions().getOptions(UiOptions.class);
+      int width = opts != null && opts.terminalColumns > 0 ? opts.terminalColumns : 80;
+      int rows = 12;
+      try {
+        rows = Integer.parseInt(clientEnv.getOrDefault("BAZEL_HOOK_ROWS", "12"));
+      } catch (NumberFormatException ignored) {
+        // keep default
+      }
+      handle = Native.create(wantUi, width, opts != null && opts.useColor(), rows, Agent.clientPid(), trace);
+      if (wantUi) {
+        // Silence UiEventHandler completely; the engine prints the messages itself.
+        parse(env, "--noshow_progress", "--curses=no", "--ui_event_filters=");
+        ui = new TerminalUi(env, handle);
+      }
+      forwarder = new EventForwarder(handle, ui, "1".equals(clientEnv.get("BAZEL_HOOK_ALL_EVENTS")));
+      forwarder.start(env);
+    } catch (Throwable t) {
+      // The hook must never take the build down with it.
+      env.getReporter().handle(Event.warn("bazel-hook: disabled after error: " + t));
+      forwarder = null;
+      ui = null;
+    }
+  }
+
+  @Override
+  public void afterCommand() {
+    try {
+      if (forwarder != null) {
+        forwarder.finish();
+      }
+      if (ui != null) {
+        ui.close();
+      }
+      if (handle != 0) {
+        Native.destroy(handle);
+      }
+    } catch (Throwable ignored) {
+      // nothing to do
+    } finally {
+      forwarder = null;
+      ui = null;
+      handle = 0;
+    }
+  }
+
+  /** Same conditions under which Bazel itself would draw its curses progress bar. */
+  private static boolean wantsTerminalUi(CommandEnvironment env, Map<String, String> clientEnv) {
+    if ("0".equals(clientEnv.get("BAZEL_HOOK_UI"))) {
+      return false;
+    }
+    UiOptions opts = env.getOptions().getOptions(UiOptions.class);
+    return opts != null && opts.isATty && opts.showProgress && opts.useCursesEnum != UiOptions.UseCurses.NO;
+  }
+
+  /**
+   * The UI handler is constructed after {@code beforeCommand} and re-reads {@code UiOptions} from
+   * the parser at that point, so adding options here is enough to change its behaviour.
+   */
+  private static void parse(CommandEnvironment env, String... options) {
+    if (env.getOptions() instanceof OptionsParser) {
+      OptionsParser parser = (OptionsParser) env.getOptions();
+      try {
+        parser.parse(PriorityCategory.SOFTWARE_REQUIREMENT, "bazel-hook", ImmutableList.copyOf(options));
+      } catch (Exception e) {
+        env.getReporter().handle(Event.warn("bazel-hook: could not set options: " + e.getMessage()));
+      }
+    }
+  }
+}

@@ -1,0 +1,17 @@
+load("@rules_rust//rust:defs.bzl", "rust_shared_library")
+
+# libbazelhook_ui.so: the status-block renderer, called from Java over JNI.
+rust_shared_library(
+    name = "bazelhook_ui",
+    srcs = glob(["src/*.rs"]),
+    edition = "2021",
+    deps = [
+        "@crates//:jni",
+        "@crates//:libc",
+        "@crates//:ratatui",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:unicode-width",
+    ],
+    visibility = ["//visibility:public"],
+)
