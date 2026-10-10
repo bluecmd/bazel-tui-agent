@@ -79,3 +79,112 @@ If you are using the fish terminal, do not forget the nice tab completion:
 uv run --with absl-py https://github.com/bazelbuild/bazel/raw/refs/heads/master/scripts/generate_fish_completion.py \
   --bazel=$(which bazel) --output=$HOME/.config/fish/completions/bazel.fish
 ```
+
+## Appendix: what the agent consumes from Bazel
+
+For Bazel developers: everything the hook touches inside the server, so
+that a change to one of these shows up here. Nothing is modified except
+where "advice" is stated; all of it is `com.google.devtools.build.lib`
+unless noted. Compiled against the release in `.bazelversion`, run on
+6.6 through 9.3; names that moved between releases are tried in order.
+
+### Bytecode advice (Byte Buddy, inlined at method entry)
+
+| Class and method | Why |
+| --- | --- |
+| `runtime.BlazeRuntime.main(Iterable<Class<? extends BlazeModule>>, …)` | appends `bazelhook.HookModule` to the module list; the only way to load a module |
+| `runtime.BlazeCommandDispatcher.exec(…)` (every overload) | reads the client description `pid=NNN` to find the client's pty, and the `TerminalSizeMonitor` argument (9.3+) |
+| `server.GrpcServerImpl.cancel(CancelRequest, StreamObserver)` | learns about Ctrl-C the moment the client sends it |
+| `runtime.BlazeOptionHandler.parseOptions*(List<String> args, …)` | appends `--show_result=0 --test_summary=none` to the re-parse the dispatcher performs after `beforeCommand`, which discards options parsed by modules |
+
+### Module lifecycle (public API)
+
+`BlazeModule.beforeCommand(CommandEnvironment)` and `afterCommand()`;
+`CommandEnvironment.getOptions/getReporter/getEventBus/getCommandName/
+getCommandId/getWorkspace/getWorkingDirectory/getExecRoot/getRuntime/
+getClientEnv`; `OptionsParser.parse(SOFTWARE_REQUIREMENT, …)` for
+`--noshow_progress --curses=no --ui_event_filters=`;
+`OptionsParsingResult.getOptions(UiOptions.class)` (`isATty`,
+`showProgress`, `useCursesEnum`, `useColor()`, `terminalColumns`),
+`BuildRequestOptions.maxResultTargets`, `ExecutionOptions.testSummary`.
+
+### Event bus postings (Guava `EventBus`, `@Subscribe Object`)
+
+| Event class | Accessors used |
+| --- | --- |
+| `actions.ActionStartedEvent` | `getAction()`, `getNanoTimeStart()` |
+| `actions.SchedulingActionEvent`, `RunningActionEvent` | `getActionMetadata()`, `getStrategy()` |
+| `actions.CachingActionEvent` (record) | `action()`/`getActionMetadata()`, `strategy()` |
+| `actions.ActionProgressEvent` (record) | `action()`, `progressId()`, `progress()`, `finished()` |
+| `actions.ActionExecutedEvent` | `getAction()`, `getException()` |
+| `actions.ActionCompletionEvent` | `getAction()`, `getRelativeActionStartTimeNanos()`/`getRelativeActionStartTime()`, `getFinishTimeNanos()` |
+| `actions.CachedActionEvent` | `getAction()` |
+| `actions.SpawnExecutedEvent` | `getSpawn().getMnemonic()`, `getActionMetadata().getPrimaryOutput()`, `getExitCode()`, `getSpawnResult()` → `getRunnerName()`, `getRunnerSubtype()`, `getExecutorHostName()`, `status()`, `isCacheHit()`, `wasRemote()`, `getWallTimeInMs()`/`getWallTime()` |
+| `actions.ActionResultReceivedEvent` | `getAction()`, `getActionResult().spawnResults()` (same `SpawnResult` accessors) |
+| on every action above, `ActionExecutionMetadata` | `getPrimaryOutput().getExecPathString()`, `getMnemonic()`, `getProgressMessage()`/`prettyPrint()`, `getOwner()` → `getLabel()`, `getTargetKind()`, `getBuildConfigurationMnemonic()`/`getConfigurationMnemonic()`/`getMnemonic()` |
+| `analysis.TargetCompleteEvent` | `getLabel()`, `failed()`, `getLegacyFilteredImportantArtifacts()` → `Artifact.getPath()` |
+| `buildtool.buildevent.BuildStartingEvent` | `request()`/`getRequest()` → `getTargets()`, `getId()` |
+| `skyframe.LoadingPhaseStartedEvent` | `getPackageProgressReceiver()` |
+| `pkgcache.LoadingPhaseCompleteEvent` | `getLabels()` |
+| `analysis.AnalysisPhaseStartedEvent` | marker only |
+| `skyframe.ConfigurationPhaseStartedEvent` | `getAnalysisProgressReceiver()`/`getConfiguredTargetProgressReceiver()` |
+| `analysis.AnalysisPhaseCompleteEvent` | `getTopLevelTargets()`, `getTargetsConfigured().total()`, `getActionsConstructed().total()`, `getTimeInMs()` |
+| `buildtool.buildevent.ExecutionPhaseStartedEvent`, `skyframe.TopLevelStatusEvents$SomeExecutionStartedEvent` | markers only |
+| `buildtool.buildevent.ExecutionProgressReceiverAvailableEvent` | `getExecutionProgressReceiver()` |
+| `buildtool.buildevent.MainRepoMappingComputationStartingEvent` | marker only |
+| `buildtool.buildevent.TestFilteringCompleteEvent` | `getTargets()`, `getTestTargets()`, `getSkippedTests()` |
+| `skyframe.TopLevelStatusEvents$TopLevelTargetAnalyzedEvent`, `$TestAnalyzedEvent` | `configuredTarget()`/`getConfiguredTarget()` → `getLabel()` |
+| `runtime.TestSummary` | `getLabel()`, `getStatus()`, `totalRuns()`, `isCached()`, `isSkipped()`, `getFailedTestCases()` (→ `getClassName()`, `getName()`), `getTotalTestCases()`, `getTestTimes()`, `getFailedLogs()`, `getPassedLogs()`, `getNumAttempts()`, `wasUnreportedWrongSize()` |
+| `buildtool.buildevent.BuildCompleteEvent` | `getResult()` → `getSuccess()`, `wasCatastrophe()`, `getDetailedExitCode().getExitCode().getNumericExitCode()`, `getStopTime()` |
+| `analysis.NoBuildEvent` | marker only |
+| `events.ExtendedEventHandler$FetchProgress` | `getResourceIdentifier()`, `getProgress()`, `isFinished()` |
+
+### Reporter
+
+Registered as an `EventHandler` on the command's `Reporter`: every
+`events.Event` (`getKind()`, `getMessage()`, `getLocation()`, `getTag()`,
+and the attached action output via `getProcessOutput().getStdOut()/
+getStdErr()` or `getStdOut()/getStdErr()`), including the STDOUT/STDERR
+writes the reporter's `OutErr` re-posts.
+
+### Polled every 100 ms (no events exist for these)
+
+| Object | Call |
+| --- | --- |
+| `PackageProgressReceiver` (from `LoadingPhaseStartedEvent`) | `progressState()` → `Pair.getFirst()/getSecond()` |
+| `AnalysisProgressReceiver` / `ConfiguredTargetProgressReceiver` | `getProgressString()` |
+| `ExecutionProgressReceiver` | `getProgressString()` |
+| the command thread | `isInterrupted()` (fallback for the cancel advice) |
+| JVM | `Runtime` heap, `OperatingSystemMXBean` load and CPU count |
+
+### Private state read by reflection
+
+| What | Why |
+| --- | --- |
+| `CommandEnvironment.getUiEventHandler()` (9+), else the `Reporter.eventHandlers` queue, then `UiEventHandler.outErr` | the real client stream; the reporter's own `OutErr` would re-post every write as an event |
+| `TerminalSizeMonitor` (9.3+): nested `Listener` interface, `addListener`, `terminalSizeChanged(cols, rows)` | width fallback when the client's pty cannot be found |
+
+### The `help` index (reflection, `bazel help` only)
+
+`BlazeRuntime.getCommandMap()`, `getBlazeModules()`,
+`getRuleClassProvider()`, `getProductName()`; each command's `@Command`
+annotation (`name`, `shortDescription`, `help`, `hidden`);
+`BlazeCommandUtils.getOptions(commandClass, modules, ruleClassProvider)`
+and `getStartupOptions(modules)`;
+`OptionsParser.getOptionDefinitions(optionsClass)`; on each
+`OptionDefinition`: `getOptionName`, `getAbbreviation`,
+`getValueTypeHelpText`, `getConverter().getTypeDescription()`,
+`getUnparsedDefaultValue`, `isSpecialNullDefault`,
+`getDocumentationCategory`, `getHelpText`, `getOptionEffectTags`,
+`getOptionMetadataTags` (HIDDEN and INTERNAL are skipped),
+`getOptionExpansion`, `getDeprecationWarning`, `getOldOptionName`,
+`allowsMultiple`, `usesBooleanValueSyntax`;
+`util.ResourceFileLoader.loadResource(class, name)` for `resource:` help
+texts and `target-syntax.txt`.
+
+### Outside the server
+
+The client's pty via `/proc/<client pid>/fd/{0,1,2}`: `TIOCGWINSZ` for the
+window size, termios (canonical mode and echo off, `ISIG` kept) to read
+keys, restored when the command ends. The workspace's convenience
+symlinks (`bazel-bin`, …) are read to pretty-print output paths.
