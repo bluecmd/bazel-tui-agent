@@ -100,6 +100,9 @@ pub enum Event {
     HookError { event_class: String, error: String, disabled: String },
     /// Any other event-bus posting, by class name (only when BAZEL_HOOK_ALL_EVENTS=1).
     Other { class: String },
+    /// Bazel 9.3+: the client's terminal size as reported over the command server (columns
+    /// only in practice; rows is 0). Sent on SIGWINCH, never at command start.
+    TerminalSize { columns: u64, rows: u64 },
 }
 
 /// An event with the server's wall-clock timestamp.

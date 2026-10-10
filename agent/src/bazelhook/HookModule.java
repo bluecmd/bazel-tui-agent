@@ -59,6 +59,7 @@ public final class HookModule extends BlazeModule {
       }
       forwarder = new EventForwarder(handle, ui, "1".equals(clientEnv.get("BAZEL_HOOK_ALL_EVENTS")));
       forwarder.start(env);
+      listenForResizes(handle, ui);
     } catch (Throwable t) {
       // The hook must never take the build down with it.
       env.getReporter().handle(Event.warn("bazel-hook: disabled after error: " + t));
@@ -85,6 +86,52 @@ public final class HookModule extends BlazeModule {
       forwarder = null;
       ui = null;
       handle = 0;
+    }
+  }
+
+  /**
+   * Bazel 9.3+ forwards the client's terminal width on SIGWINCH to a TerminalSizeMonitor that is
+   * handed to the dispatcher. Subscribe through a reflective proxy so the agent has no compile-time
+   * dependency on that class (older servers simply have no monitor).
+   */
+  private static void listenForResizes(long handle, TerminalUi ui) {
+    Object monitor = Agent.terminalSizeMonitor();
+    if (monitor == null) {
+      return;
+    }
+    try {
+      Class<?> listener = null;
+      for (Class<?> c : monitor.getClass().getDeclaredClasses()) {
+        if (c.isInterface() && c.getSimpleName().equals("Listener")) {
+          listener = c;
+        }
+      }
+      if (listener == null) {
+        return;
+      }
+      Object proxy =
+          java.lang.reflect.Proxy.newProxyInstance(
+              listener.getClassLoader(),
+              new Class<?>[] {listener},
+              (p, method, args) -> {
+                if (method.getName().equals("terminalSizeChanged") && args != null && args.length == 2) {
+                  Native.event(handle, new Packet(Packet.TERMINAL_SIZE).i64(((Number) args[0]).longValue()).i64(((Number) args[1]).longValue()).finish());
+                  if (ui != null) {
+                    ui.flush();
+                  }
+                  return null;
+                }
+                if (method.getName().equals("hashCode")) {
+                  return System.identityHashCode(p);
+                }
+                if (method.getName().equals("equals")) {
+                  return p == args[0];
+                }
+                return method.getName().equals("toString") ? "bazel-hook size listener" : null;
+              });
+      monitor.getClass().getMethod("addListener", listener).invoke(monitor, proxy);
+    } catch (ReflectiveOperationException | RuntimeException ignored) {
+      // no resize notifications on this Bazel; the inline block keeps its initial width
     }
   }
 

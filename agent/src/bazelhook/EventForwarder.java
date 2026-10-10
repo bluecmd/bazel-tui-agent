@@ -308,6 +308,10 @@ final class EventForwarder implements EventHandler {
           .i64(ev.getResult().getStopTime());
     });
     on(LIB + "analysis.NoBuildEvent", e -> new Packet(Packet.NO_BUILD));
+    // The silent stretch before loading (module resolution) has one marker event; surface it as
+    // the same kind of activity message Bazel's own UI shows.
+    on(LIB + "buildtool.buildevent.MainRepoMappingComputationStartingEvent", e ->
+        new Packet(Packet.MESSAGE).str("PROGRESS").str("Computing main repo mapping").str("").str("").bytes(null).bytes(null));
     on(LIB + "events.ExtendedEventHandler$FetchProgress", e -> {
       FetchProgress ev = (FetchProgress) e;
       return new Packet(Packet.FETCH).str(ev.getResourceIdentifier()).str(ev.getProgress()).bool(ev.isFinished());

@@ -57,7 +57,8 @@ impl Renderer {
     pub fn resize(&mut self, cols: usize, rows: usize) {
         let width = cols.clamp(40, 500) as u16 - 1;
         self.term_rows = rows as u16;
-        let max_rows = (rows as u16 / 2).max(4);
+        // rows == 0: width known but not height (Bazel's own resize RPC); keep the block height.
+        let max_rows = if rows == 0 { 40 } else { (rows as u16 / 2).max(4) };
         let block_rows = self.rows.min(max_rows).max(4);
         if width != self.width || block_rows != self.term.backend().size().map(|s| s.height).unwrap_or(0) {
             self.width = width;
@@ -101,7 +102,7 @@ impl Renderer {
     }
 
     pub fn render(&mut self, s: &State, now: i64) -> String {
-        if s.command.is_none() || !s.build_started || s.phase == "finished" || s.finished {
+        if s.command.is_none() || !s.command_builds() || s.phase == "finished" || s.finished {
             return String::new();
         }
         self.tick += 1;
@@ -182,8 +183,15 @@ impl Renderer {
         } else if let Some(a) = &s.analysis {
             progress.push(Span::styled("analysis ", st(MUTED)));
             progress.push(Span::raw(a.clone()));
+        } else if !s.fetches.is_empty() {
+            let (res, prog) = s.fetches.iter().next().unwrap();
+            progress.push(Span::styled(format!("fetching {} ", s.fetches.len()), st(MUTED)));
+            progress.push(Span::raw(short_label(res, 50)));
+            progress.push(Span::styled(format!("  {}", prog), dim()));
+        } else if !s.activity.is_empty() {
+            progress.push(Span::raw(s.activity.clone()));
         } else {
-            progress.push(Span::styled("waiting for the server…", st(MUTED)));
+            progress.push(Span::styled("starting…", st(MUTED)));
         }
 
         // ---- graphs line: label, sparkline, value, label, sparkline, value, server stats

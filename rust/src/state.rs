@@ -51,6 +51,8 @@ pub struct State {
     pub analysis_done: bool,
     pub execution: Option<String>,
     pub build_started: bool,
+    /// Latest PROGRESS-kind message ("Computing main repo mapping", "Loading package: ...").
+    pub activity: String,
     pub fetches: BTreeMap<String, String>,
     pub actions: HashMap<String, Action>,
     pub completed: u64,
@@ -257,6 +259,7 @@ impl State {
             Event::Message(m) => match m.kind.as_str() {
                 "WARNING" => self.warnings += 1,
                 "ERROR" | "FATAL" => self.errors += 1,
+                "PROGRESS" => self.activity = m.text.trim().to_string(),
                 _ => {}
             },
             Event::System { heap_used_mb, heap_max_mb, load, cpus } => {
@@ -277,6 +280,15 @@ impl State {
             }
             _ => {}
         }
+    }
+
+    /// Commands that run a build and therefore get the live UI from their first tick. Everything
+    /// else (`query`, `info`, `help`, ...) writes to stdout and is left alone.
+    pub fn command_builds(&self) -> bool {
+        matches!(
+            self.command.as_deref(),
+            Some("build" | "test" | "run" | "coverage" | "fetch" | "vendor" | "mobile-install" | "cquery" | "aquery" | "sync" | "print_action")
+        )
     }
 
     /// Feeds the graphs; called from render (every ~100 ms).

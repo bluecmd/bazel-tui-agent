@@ -35,6 +35,7 @@ final class Packet {
   static final byte COMMAND_FINISHED = 25;
   static final byte HOOK_ERROR = 26;
   static final byte OTHER = 27;
+  static final byte TERMINAL_SIZE = 28;
 
   private byte[] buf = new byte[256];
   private int len;

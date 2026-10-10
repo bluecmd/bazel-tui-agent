@@ -44,6 +44,8 @@ pub struct Terminal {
     captured: Vec<(bool, Vec<u8>)>,
     log_lines: Vec<String>,
     partial: String,
+    /// Size reported by Bazel's own resize RPC (9.3+), used when the pty is not available.
+    reported: Option<(u16, u16)>,
 }
 
 impl Terminal {
@@ -61,6 +63,7 @@ impl Terminal {
             captured: Vec::new(),
             log_lines: Vec::new(),
             partial: String::new(),
+            reported: None,
         };
         t.sync_size();
         t
@@ -68,7 +71,7 @@ impl Terminal {
 
     /// The dashboard needs the real terminal size (from the pty) and room for its panels.
     fn dashboard_possible(&self) -> Option<(u16, u16)> {
-        let (cols, rows) = self.pty.as_ref()?.size()?;
+        let (cols, rows) = self.current_size()?;
         if cols >= 80 && rows >= 20 { Some((cols, rows)) } else { None }
     }
 
@@ -93,9 +96,21 @@ impl Terminal {
         }
     }
 
+    /// Bazel 9.3+ reports the client's columns on SIGWINCH (rows arrive as 0).
+    pub fn reported_size(&mut self, columns: u16, rows: u16) {
+        if columns > 0 {
+            self.reported = Some((columns, rows));
+        }
+    }
+
+    /// The client's current window size: from its pty when we have it, else as reported by Bazel.
+    fn current_size(&self) -> Option<(u16, u16)> {
+        self.pty.as_ref().and_then(|p| p.size()).or(self.reported)
+    }
+
     /// Picks up the client's current window size (resizes are invisible to the server otherwise).
     fn sync_size(&mut self) {
-        if let Some((cols, rows)) = self.pty.as_ref().and_then(|p| p.size()) {
+        if let Some((cols, rows)) = self.current_size() {
             self.renderer.resize(cols as usize, rows as usize);
         }
     }
@@ -204,7 +219,7 @@ impl Terminal {
     pub fn poll(&mut self, state: &State, now_ms: i64) -> Output {
         self.sync_size();
         self.handle_keys();
-        if state.build_started && !state.finished {
+        if state.command_builds() && !state.finished {
             if let Some((cols, rows)) = self.dashboard_possible() {
                 return self.poll_dashboard(state, now_ms, cols, rows);
             }

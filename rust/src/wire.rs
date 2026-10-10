@@ -43,6 +43,7 @@ pub const TAG_SYSTEM: u8 = 24;
 pub const TAG_COMMAND_FINISHED: u8 = 25;
 pub const TAG_HOOK_ERROR: u8 = 26;
 pub const TAG_OTHER: u8 = 27;
+pub const TAG_TERMINAL_SIZE: u8 = 28;
 
 struct Reader<'a> {
     buf: &'a [u8],
@@ -179,6 +180,7 @@ pub fn decode(buf: &[u8]) -> Option<Stamped> {
         TAG_COMMAND_FINISHED => Event::CommandFinished,
         TAG_HOOK_ERROR => Event::HookError { event_class: r.str()?, error: r.str()?, disabled: r.str()? },
         TAG_OTHER => Event::Other { class: r.str()? },
+        TAG_TERMINAL_SIZE => Event::TerminalSize { columns: r.u64()?, rows: r.u64()? },
         _ => return None,
     };
     Some(Stamped { t_ms, event })

@@ -21,6 +21,7 @@ public final class Agent {
   private static volatile long jarMtimeMs;
   private static volatile String jarPath = "";
   private static volatile long clientPid;
+  private static volatile Object terminalSizeMonitor;
 
   private Agent() {}
 
@@ -34,9 +35,21 @@ public final class Agent {
     return clientPid;
   }
 
+  /**
+   * Bazel 9.3+ passes a TerminalSizeMonitor to exec(); the client reports column changes to it
+   * (SIGWINCH), which is the only resize signal available without the client's pty.
+   */
+  public static Object terminalSizeMonitor() {
+    return terminalSizeMonitor;
+  }
+
   /** Called from the inlined advice; must stay public. */
   public static void noteClientDescription(Object[] args) {
+    Object monitor = null;
     for (Object a : args) {
+      if (a != null && a.getClass().getSimpleName().equals("TerminalSizeMonitor")) {
+        monitor = a;
+      }
       if (a instanceof String && ((String) a).startsWith("pid=")) {
         String digits = ((String) a).substring(4).split("[^0-9]")[0];
         try {
@@ -46,6 +59,7 @@ public final class Agent {
         }
       }
     }
+    terminalSizeMonitor = monitor;
   }
 
   /** The running Bazel's version string, from BlazeVersionInfo if it is available. */

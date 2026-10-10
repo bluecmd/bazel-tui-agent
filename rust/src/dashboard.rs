@@ -128,8 +128,14 @@ impl Dashboard {
         } else if let Some(a) = &s.analysis {
             line2.push(Span::styled("analysis  ", st(MUTED)));
             line2.push(Span::raw(a.clone()));
+        } else if let Some((res, prog)) = s.fetches.iter().find(|(_, p)| !p.is_empty() && *p != "starting") {
+            line2.push(Span::styled("fetching  ", st(MUTED)));
+            line2.push(Span::raw(short_label(res, 60)));
+            line2.push(Span::styled(format!("  {}", prog), dim()));
+        } else if !s.activity.is_empty() {
+            line2.push(Span::raw(s.activity.clone()));
         } else {
-            line2.push(Span::styled("waiting for the server…", st(MUTED)));
+            line2.push(Span::styled("starting…", st(MUTED)));
         }
         let mut line3: Vec<Span> = Vec::new();
         for (i, p) in ["loading", "analysis", "execution"].iter().enumerate() {
@@ -198,10 +204,19 @@ impl Dashboard {
             server.push(Line::from(Span::styled("cache no spawns yet", st(MUTED))));
         }
 
-        // ---- running panel content
+        // ---- running panel content (downloads take its place until actions start)
         let acts = s.running_sorted();
         let running_now = s.running_count();
         let mut running_lines: Vec<(Vec<Span>, Vec<Span>)> = Vec::new();
+        // Downloads and repository fetches are listed first; they are the activity while actions wait.
+        let fetching = !s.fetches.is_empty();
+        if fetching {
+            for (res, prog) in s.fetches.iter() {
+                let left = vec![Span::raw(" "), Span::styled("↓ ", st(ACCENT)), Span::raw(short_label(res, 70))];
+                let right = vec![Span::styled(prog.chars().take(40).collect::<String>(), st(MUTED))];
+                running_lines.push((left, right));
+            }
+        }
         for a in &acts {
             let mark = match a.state {
                 ActState::Run => Span::styled("▸ ", st(OK)),
@@ -307,7 +322,11 @@ impl Dashboard {
                 } else {
                     let tree_w = ((area.width as f32 * 0.4) as u16).max(34);
                     let ms = Layout::horizontal([Constraint::Fill(1), Constraint::Length(tree_w)]).split(rows_c[2]);
-                    let rb = panel(&format!("running {}", running_now), &format!("{} in flight · peak {}", acts.len(), s.peak_running));
+                    let rb = if fetching {
+                        panel(&format!("fetching {} · running {}", s.fetches.len(), running_now), &format!("{} in flight · peak {}", acts.len(), s.peak_running))
+                    } else {
+                        panel(&format!("running {}", running_now), &format!("{} in flight · peak {}", acts.len(), s.peak_running))
+                    };
                     let ri = rb.inner(ms[0]);
                     f.render_widget(rb, ms[0]);
                     let rrows = Layout::vertical(vec![Constraint::Length(1); ri.height as usize]).split(ri);

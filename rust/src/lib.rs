@@ -70,8 +70,10 @@ pub extern "system" fn Java_bazelhook_Native_event(env: JNIEnv, _class: JClass, 
         t.write(&ev);
     }
     e.state.apply(&ev);
-    if let (Some(term), events::Event::Message(msg)) = (e.terminal.as_mut(), &ev.event) {
-        term.message(msg);
+    match (e.terminal.as_mut(), &ev.event) {
+        (Some(term), events::Event::Message(msg)) => term.message(msg),
+        (Some(term), events::Event::TerminalSize { columns, rows }) => term.reported_size(*columns as u16, *rows as u16),
+        _ => {}
     }
     1
 }
