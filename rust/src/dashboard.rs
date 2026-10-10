@@ -102,12 +102,11 @@ impl Dashboard {
         // ---- header content
         let targets: Vec<&str> = s.args.iter().map(|x| x.as_str()).take(4).collect();
         ABORTING.store(s.cancelling(), std::sync::atomic::Ordering::Relaxed);
-        let bottleneck = s.bottleneck(now);
         let state_span = match s.build_success {
             Some(true) => Span::styled("✔ success", bold(OK)),
             Some(false) => Span::styled("✘ failed", bold(BAD)),
             None if s.cancelling() => Span::styled(format!("{} ABORTING", spin), bold(ABORT)),
-            None if bottleneck.is_some() => Span::styled(format!("{} waiting on {} action{}", spin, s.running_count(), if s.running_count() == 1 { "" } else { "s" }), bold(WARN)),
+            None if s.analysis_live() => Span::styled(format!("{} analysis", spin), bold(ACCENT)),
             None => Span::styled(format!("{} {}", spin, s.phase), bold(ACCENT)),
         };
         let line1 = Line::from(vec![
@@ -126,18 +125,21 @@ impl Dashboard {
                 format!("· stopping {} running action{} and unwinding, {}s so far · a third Ctrl-C kills the server (slow next start)", s.running_count(), if s.running_count() == 1 { "" } else { "s" }, secs),
                 st(ABORT),
             ));
-        } else if let Some((a, age)) = bottleneck {
-            let (done, total) = counts.unwrap_or((0, 0));
-            line2.push(Span::styled("waiting on ", st(WARN)));
-            line2.push(Span::styled(a.mnemonic.clone(), bold(mnemonic_rgb(&a.mnemonic))));
-            line2.push(Span::raw(format!(" {} ", short_label(&a.label, 50))));
-            line2.push(Span::styled(fmt_duration(age as f64 / 1000.0), bold(WARN)));
-            if let Some(p) = &a.progress {
-                line2.push(Span::styled(format!("  {}", p), dim()));
-            } else if !a.desc.is_empty() {
-                line2.push(Span::styled(format!("  {}", a.desc.chars().take(60).collect::<String>()), dim()));
+        } else if s.analysis_live() {
+            // Skymeld: analysis and execution overlap; the analysis counter is the one moving.
+            line2.push(Span::styled("analysis  ", st(MUTED)));
+            line2.push(Span::raw(s.analysis.clone().unwrap_or_default()));
+            if let Some((done, total)) = counts {
+                if total > 1 {
+                    line2.push(Span::styled(format!("  · executing {}/{}", with_commas(done), with_commas(total)), st(MUTED)));
+                }
             }
-            line2.push(Span::styled(format!("  · {} of {} left behind it", with_commas(total.saturating_sub(done)), with_commas(total)), st(MUTED)));
+            if !s.activity.is_empty() {
+                let room = (self.cols as usize).saturating_sub(70);
+                if room > 12 {
+                    line2.push(Span::styled(format!("  {}", s.activity.chars().take(room).collect::<String>()), dim()));
+                }
+            }
         } else if let Some((done, total)) = counts {
             let frac = if total > 0 { done as f64 / total as f64 } else { 0.0 };
             let barw = (self.cols as usize).saturating_sub(self.cols as usize / 4 + 44).clamp(10, 80);
@@ -711,7 +713,7 @@ mod tests {
     }
 
     #[test]
-    fn waiting_and_aborting_states_show_in_both_renderers() {
+    fn aborting_state_shows_in_both_renderers() {
         let mut s = synthetic();
         let t = 1_100_000i64;
         let slow = ActionRef { id: "slow".into(), mnemonic: "Rustc".into(), label: "//crate:lib".into(), description: "Compiling lib".into(), ..Default::default() };
@@ -719,13 +721,12 @@ mod tests {
         s.apply(&Stamped { t_ms: t, event: Event::ActionRunning { action: slow, strategy: "linux-sandbox".into() } });
         s.apply(&Stamped { t_ms: t, event: Event::Progress { loading: String::new(), loading_detail: String::new(), analysis: String::new(), execution: "[40 / 70]".into() } });
         let now = t + 8_000;
-        assert!(s.bottleneck(now).is_some());
         let mut d = Dashboard::new(120, 30, false);
         let text = d.render(&s, &[], now).join("\n");
-        assert!(text.contains("waiting on 1 action"), "{}", text);
         assert!(text.contains("Rustc"), "{}", text);
         let mut r = crate::render::Renderer::new(120, false, 12);
-        assert!(r.render(&s, now).contains("waiting on"));
+        let inline = r.render(&s, now);
+        assert!(inline.contains("40/70"), "{}", inline);
 
         s.apply(&Stamped { t_ms: now, event: Event::Cancelled });
         assert!(s.cancelling());

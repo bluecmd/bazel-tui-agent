@@ -161,13 +161,14 @@ impl Renderer {
             let secs = (now - s.cancelled_ms.unwrap_or(now)) / 1000;
             progress.push(Span::styled("ABORTING ", bold(ABORT)));
             progress.push(Span::styled(format!("Ctrl-C received · stopping {} running action(s), {}s so far · a third Ctrl-C kills the server", s.running_count(), secs), st(ABORT)));
-        } else if let Some((a, age)) = s.bottleneck(now) {
-            let (done, total) = counts.unwrap_or((0, 0));
-            progress.push(Span::styled("waiting on ", st(WARN)));
-            progress.push(Span::styled(a.mnemonic.clone(), bold(mnemonic_rgb(&a.mnemonic))));
-            progress.push(Span::raw(format!(" {} ", short_label(&a.label, 40))));
-            progress.push(Span::styled(fmt_duration(age as f64 / 1000.0), bold(WARN)));
-            progress_right.push(Span::styled(format!("{} of {} left", with_commas(total.saturating_sub(done)), with_commas(total)), st(MUTED)));
+        } else if s.analysis_live() {
+            progress.push(Span::styled("analysis ", st(MUTED)));
+            progress.push(Span::raw(s.analysis.clone().unwrap_or_default()));
+            if let Some((done, total)) = counts {
+                if total > 1 {
+                    progress_right.push(Span::styled(format!("executing {}/{}", with_commas(done), with_commas(total)), st(MUTED)));
+                }
+            }
         } else if let Some((done, total)) = counts {
             let frac = if total > 0 { done as f64 / total as f64 } else { 0.0 };
             let barw = width.saturating_sub(48).clamp(10, 40);
@@ -183,6 +184,7 @@ impl Renderer {
             if s.peak_running > 0 {
                 right.push_str(&format!(" · peak {}", s.peak_running));
             }
+            let mut detail = String::new();
             if let Some(rate) = s.hit_rate() {
                 right.push_str(&format!(" · {}% cached", (rate * 100.0).round() as u32));
                 // Which caches, briefly: "(449 local, 3 remote)".
@@ -194,11 +196,15 @@ impl Renderer {
                     }
                 }
                 if hits.len() > 1 || (hits.len() == 1 && !hits[0].ends_with("local")) {
-                    right.push_str(&format!(" ({})", hits.join(", ")));
+                    detail.push_str(&format!(" ({})", hits.join(", ")));
                 }
             }
             if s.source_count(Source::RemoteExec) > 0 {
-                right.push_str(&format!(" · {} remote exec", with_commas(s.source_count(Source::RemoteExec))));
+                detail.push_str(&format!(" · {} remote exec", with_commas(s.source_count(Source::RemoteExec))));
+            }
+            // The breakdown only when it leaves room for the bar and the counters.
+            if right.width() + detail.width() + barw + 30 <= width {
+                right.push_str(&detail);
             }
             progress_right.push(Span::styled(right, st(MUTED)));
         } else if let (Some(l), false) = (&s.loading, s.analysis_done) {

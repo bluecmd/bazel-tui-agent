@@ -512,19 +512,10 @@ impl State {
         self.cancelled_ms.is_some() && !self.finished && self.build_success.is_none()
     }
 
-    /// The action everything is waiting on: when at most two actions run and more are queued
-    /// behind them, the longest-running one (with its age in ms).
-    pub fn bottleneck(&self, now: i64) -> Option<(&Action, i64)> {
-        let running: Vec<&Action> = self.actions.values().filter(|a| a.state == ActState::Run).collect();
-        if running.is_empty() || running.len() > 2 {
-            return None;
-        }
-        let left = self.exec_counts().map(|(d, t)| t.saturating_sub(d)).unwrap_or(0);
-        if left <= running.len() as u64 {
-            return None;
-        }
-        let a = running.iter().min_by_key(|a| a.t_ms)?;
-        Some((a, now - a.t_ms))
+    /// Analysis is still configuring targets. With Skymeld, Bazel starts the execution phase and
+    /// its "[1 / 1]" counter while this is going on; that counter says nothing useful yet.
+    pub fn analysis_live(&self) -> bool {
+        self.analysis.is_some() && !self.analysis_done
     }
 
     pub fn running_count(&self) -> u64 {
