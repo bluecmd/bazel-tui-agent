@@ -7,9 +7,35 @@ graphs, running actions, build tree, mnemonics, log) on your terminal. When
 output is not a terminal, or on platforms without the native library, Bazel
 behaves exactly as without the agent.
 
-Demo: https://asciinema.org/a/TkLD0Ppus3PXVGHz
-
 <img width="2880" height="1920" alt="image" src="https://github.com/user-attachments/assets/a9f6c598-47ba-4557-b18b-3ad5ede56267" />
+
+## See it run
+
+Recorded from the real terminal stream and regenerated whenever the UI
+changes; click any clip for a text player you can pause and copy from.
+
+**`bazel build //...`** — server start, analysis, the dashboard, then the
+per-target output listing.
+
+[<img src="https://raw.githubusercontent.com/bluecmd/bazel-tui-agent/media/build.avif" alt="bazel build" width="100%">](https://bluecmd.github.io/bazel-tui-agent/#build)
+
+**`bazel test //...`** — the test overview: counts, failures first, cases
+and log paths.
+
+[<img src="https://raw.githubusercontent.com/bluecmd/bazel-tui-agent/media/test.avif" alt="bazel test" width="100%">](https://bluecmd.github.io/bazel-tui-agent/#test)
+
+**A directory output with a remote cache** — the report lists what is
+inside, and the cache panel shows where the actions came from.
+
+[<img src="https://raw.githubusercontent.com/bluecmd/bazel-tui-agent/media/cached.avif" alt="bazel build of a directory output" width="100%">](https://bluecmd.github.io/bazel-tui-agent/#cached)
+
+**`bazel help`** — lazy-matching search over every command and option.
+
+[<img src="https://raw.githubusercontent.com/bluecmd/bazel-tui-agent/media/help.avif" alt="bazel help" width="100%">](https://bluecmd.github.io/bazel-tui-agent/#help)
+
+**Failing and flaky tests** on the small workspace shipped with the hook.
+
+[<img src="https://raw.githubusercontent.com/bluecmd/bazel-tui-agent/media/failing.avif" alt="bazel test with failures" width="100%">](https://bluecmd.github.io/bazel-tui-agent/#failing)
 
 ## Enable
 

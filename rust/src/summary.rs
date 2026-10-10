@@ -337,7 +337,25 @@ fn artifacts(s: &State, sty: &Sty, width: usize) -> String {
     }
     let paths = Paths::new(&s.workspace, &s.exec_root);
     let targets: Vec<&TargetDone> = by_label.values().copied().collect();
-    let shown = &targets[..targets.len().min(limit)];
+    // A handful of targets: list them all. A wildcard build: only the targets that failed or
+    // whose outputs were written by this command; the unchanged ones are a count in the footer.
+    let all_rows = targets.len() <= 10;
+    let mut unchanged = 0usize;
+    let mut picked: Vec<&TargetDone> = Vec::new();
+    let mut stats: Vec<(&TargetDone, Vec<FileRow>)> = Vec::new();
+    for t in &targets {
+        let files: Vec<FileRow> = if t.failed { Vec::new() } else { t.outputs.iter().map(|p| stat_row(&paths, p, s.t0_ms)).collect() };
+        let interesting = t.failed || files.iter().any(|f| f.fresh || matches!(f.kind, Kind::Missing));
+        if all_rows || interesting {
+            if picked.len() < limit {
+                picked.push(t);
+            }
+        } else {
+            unchanged += 1;
+        }
+        stats.push((t, files));
+    }
+    let shown = &picked[..];
 
     const PER_TARGET: usize = 20;
     let mut rows: Vec<(String, Vec<FileRow>, usize, u64)> = Vec::new(); // label, files, hidden count, hidden bytes
@@ -345,17 +363,11 @@ fn artifacts(s: &State, sty: &Sty, width: usize) -> String {
     let mut n_bytes = 0u64;
     let mut n_fresh = 0u64;
     let mut n_failed = 0u64;
-    for t in shown {
+    for (t, files) in stats {
         if t.failed {
             n_failed += 1;
-            rows.push((t.label.clone(), Vec::new(), 0, 0));
-            continue;
         }
-        let mut files = Vec::new();
-        let mut hidden = 0;
-        let mut hidden_bytes = 0;
-        for (i, p) in t.outputs.iter().enumerate() {
-            let r = stat_row(&paths, p, s.t0_ms);
+        for r in &files {
             n_files += match r.kind {
                 Kind::Dir { files } => files,
                 Kind::Missing => 0,
@@ -365,14 +377,14 @@ fn artifacts(s: &State, sty: &Sty, width: usize) -> String {
             if r.fresh {
                 n_fresh += 1;
             }
-            if i < PER_TARGET {
-                files.push(r);
-            } else {
-                hidden += 1;
-                hidden_bytes += r.size;
-            }
         }
-        rows.push((t.label.clone(), files, hidden, hidden_bytes));
+        if !shown.iter().any(|p| std::ptr::eq(*p, t)) {
+            continue;
+        }
+        let total = files.len();
+        let hidden_bytes: u64 = files.iter().skip(PER_TARGET).map(|f| f.size).sum();
+        let kept: Vec<FileRow> = files.into_iter().take(PER_TARGET).collect();
+        rows.push((t.label.clone(), kept, total.saturating_sub(PER_TARGET), hidden_bytes));
     }
 
     let pathw = rows.iter().flat_map(|r| r.1.iter()).map(|f| f.path.width()).max().unwrap_or(0).min(width.saturating_sub(5 + 9 + 2 + 14));
@@ -404,7 +416,7 @@ fn artifacts(s: &State, sty: &Sty, width: usize) -> String {
             };
             let status = match (&f.kind, f.fresh) {
                 (Kind::Missing, _) => sty.dim("? missing"),
-                (Kind::Dir { files }, true) => sty.rgb(&format!("● {} files, built", files), OK),
+                (Kind::Dir { files }, true) => sty.rgb(&format!("● {} files", files), OK),
                 (Kind::Dir { files }, false) => sty.dim(&format!("○ {} files", files)),
                 (_, true) => sty.rgb("● built", OK),
                 (_, false) => sty.dim("○ unchanged"),
@@ -418,8 +430,9 @@ fn artifacts(s: &State, sty: &Sty, width: usize) -> String {
             out.push_str(&format!("     {}\n", sty.dim(&format!("… {} more files ({})", hidden, fmt_size(*hidden_bytes)))));
         }
     }
-    if targets.len() > shown.len() {
-        out.push_str(&format!(" {}\n", sty.dim(&format!("… {} more targets", targets.len() - shown.len()))));
+    let more = targets.len() - shown.len() - unchanged;
+    if more > 0 {
+        out.push_str(&format!(" {}\n", sty.dim(&format!("… {} more targets", more))));
     }
     let mut foot = vec![format!("{} target{}", targets.len(), if targets.len() == 1 { "" } else { "s" })];
     if n_files > 0 {
@@ -431,6 +444,9 @@ fn artifacts(s: &State, sty: &Sty, width: usize) -> String {
     }
     if n_failed > 0 {
         foot.push(format!("{} failed", n_failed));
+    }
+    if unchanged > 0 {
+        foot.push(format!("{} unchanged target{} not listed", unchanged, if unchanged == 1 { "" } else { "s" }));
     }
     out.push_str(&format!(" {}\n", sty.dim(&foot.join(" · "))));
     out
