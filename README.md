@@ -44,3 +44,12 @@ Linux x86_64 only for the UI. One jar runs on Bazel 6.6 through 9.3.
 ```sh
 bazel build //agent:agent_deploy.jar   # -> bazel-bin/agent/agent_deploy.jar
 ```
+
+## Extra: Bazel autocomplete for fish
+
+If you are using the fish terminal, do not forget the nice tab completion:
+
+```
+uv run --with absl-py https://github.com/bazelbuild/bazel/raw/refs/heads/master/scripts/generate_fish_completion.py \
+  --bazel=$(which bazel) --output=$HOME/.config/fish/completions/bazel.fish
+```
