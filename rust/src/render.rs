@@ -13,7 +13,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Sparkline};
 use ratatui::Terminal;
 use unicode_width::UnicodeWidthStr;
 
-use crate::state::{ActState, State};
+use crate::state::{ActState, Source, State};
 use crate::text::*;
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -171,11 +171,22 @@ impl Renderer {
             if s.peak_running > 0 {
                 right.push_str(&format!(" · peak {}", s.peak_running));
             }
-            if s.spawns > 0 {
-                right.push_str(&format!(" · {}% cache", s.cache_hits * 100 / s.spawns));
+            if let Some(rate) = s.hit_rate() {
+                right.push_str(&format!(" · {}% cached", (rate * 100.0).round() as u32));
+                // Which caches, briefly: "(449 local, 3 remote)".
+                let mut hits = Vec::new();
+                for (src, word) in [(Source::ActionCache, "local"), (Source::RemoteCache, "remote"), (Source::DiskCache, "disk")] {
+                    let n = s.source_count(src);
+                    if n > 0 {
+                        hits.push(format!("{} {}", with_commas(n), word));
+                    }
+                }
+                if hits.len() > 1 || (hits.len() == 1 && !hits[0].ends_with("local")) {
+                    right.push_str(&format!(" ({})", hits.join(", ")));
+                }
             }
-            if s.remote > 0 {
-                right.push_str(&format!(" · {} remote", s.remote));
+            if s.source_count(Source::RemoteExec) > 0 {
+                right.push_str(&format!(" · {} remote exec", with_commas(s.source_count(Source::RemoteExec))));
             }
             progress_right.push(Span::styled(right, st(MUTED)));
         } else if let (Some(l), false) = (&s.loading, s.analysis_done) {

@@ -39,6 +39,7 @@ final class Packet {
   static final byte HELP_COMMAND = 29;
   static final byte HELP_OPTION = 30;
     static final byte ACTION_CACHED = 31;
+  static final byte ACTION_RESULT = 32;
 
   private byte[] buf = new byte[256];
   private int len;

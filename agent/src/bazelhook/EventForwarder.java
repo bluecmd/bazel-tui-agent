@@ -269,6 +269,28 @@ final class EventForwarder implements EventHandler {
           .bool(Boolean.TRUE.equals(Reflect.call(r, "wasRemote")))
           .i64(Reflect.millis(Reflect.call(r, "getWallTimeInMs", "getWallTime")));
     });
+    // Cache hits (remote/disk) post no SpawnExecutedEvent on newer releases; the action result,
+    // posted for every executed or cache-served action, carries the same spawn results.
+    on(LIB + "actions.ActionResultReceivedEvent", e -> {
+      Object action = Reflect.call(e, "getAction");
+      Object result = Reflect.call(e, "getActionResult");
+      Object spawns = Reflect.call(result, "spawnResults");
+      List<Object> items = new ArrayList<>();
+      if (spawns instanceof Iterable) {
+        for (Object r : (Iterable<?>) spawns) {
+          items.add(r);
+        }
+      }
+      Packet p = action(new Packet(Packet.ACTION_RESULT), (ActionExecutionMetadata) action).i64(items.size());
+      for (Object r : items) {
+        p.str(Reflect.str(r, "getRunnerName"))
+            .bool(Boolean.TRUE.equals(Reflect.call(r, "isCacheHit")))
+            .bool(Boolean.TRUE.equals(Reflect.call(r, "wasRemote")))
+            .i64(Reflect.millis(Reflect.call(r, "getWallTimeInMs", "getWallTime")))
+            .str(Reflect.str(r, "status"));
+      }
+      return p;
+    });
     on(LIB + "analysis.TargetCompleteEvent", e -> {
       TargetCompleteEvent ev = (TargetCompleteEvent) e;
       // The files Bazel's own result printer would list ("Target //x up-to-date: ...").

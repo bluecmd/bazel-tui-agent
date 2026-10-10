@@ -11,7 +11,7 @@ use std::time::UNIX_EPOCH;
 
 use unicode_width::UnicodeWidthStr;
 
-use crate::state::{State, TargetDone, TestResult};
+use crate::state::{Source, State, TargetDone, TestResult};
 use crate::text::*;
 
 /// ANSI styling that switches off with `--color=no`.
@@ -53,6 +53,10 @@ pub fn report(s: &State, now: i64, color: bool, width: usize) -> Report {
     rep.stderr.push('\n');
     rep.stderr.push_str(&verdict_line(s, now, &sty, success));
     rep.stderr.push('\n');
+    if let Some(line) = sources_line(s, &sty) {
+        rep.stderr.push_str(&line);
+        rep.stderr.push('\n');
+    }
 
     match s.command.as_deref().unwrap_or("") {
         "test" | "coverage" => {
@@ -113,6 +117,23 @@ fn verdict_line(s: &State, now: i64, sty: &Sty, success: bool) -> String {
     let tests_failed = s.tests.values().any(|t| rank(t) == 0);
     let mark = if success && !tests_failed { sty.rgb_bold("✔", OK) } else { sty.rgb_bold("✘", BAD) };
     format!("{} {} {}  {}", mark, sty.bold(s.command.as_deref().unwrap_or("build")), sty.bold(&fmt_duration(total)), sty.dim(&parts.join(" · ")))
+}
+
+/// Where the actions came from: "actions 455 · 449 action cache · 3 remote cache · 2 local exec".
+fn sources_line(s: &State, sty: &Sty) -> Option<String> {
+    let total = s.cache_total();
+    if total == 0 {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for src in Source::ALL {
+        let n = s.source_count(src);
+        if n > 0 {
+            let text = format!("{} {}", with_commas(n), src.name());
+            parts.push(if src.is_hit() { sty.rgb(&text, OK) } else { sty.rgb(&text, WARN) });
+        }
+    }
+    Some(format!("  {} {}  {}", sty.dim("actions"), sty.bold(&with_commas(total)), parts.join(&sty.dim(" · "))))
 }
 
 // ---- paths ------------------------------------------------------------------------------------

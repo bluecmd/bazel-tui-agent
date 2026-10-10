@@ -126,6 +126,9 @@ pub struct State {
     /// Labels in completion order (tests and targets).
     pub targets: Vec<TargetDone>,
     pub help: Vec<crate::help::Item>,
+    /// Action ids whose spawns were already counted from `Spawn` events (so their `ActionResult`
+    /// is not counted again).
+    pub spawn_counted: std::collections::HashSet<String>,
     pub warnings: u64,
     pub errors: u64,
     pub build_success: Option<bool>,
@@ -233,6 +236,22 @@ impl State {
         }
     }
 
+    /// One spawn (executed or served from a cache) for the counters and the source breakdown.
+    fn count_spawn(&mut self, runner: &str, cache_hit: bool, remote: bool, host: &str) {
+        self.spawns += 1;
+        if cache_hit {
+            self.cache_hits += 1;
+        }
+        if remote {
+            self.remote += 1;
+        }
+        *self.runners.entry(if runner.is_empty() { "?".into() } else { runner.to_string() }).or_insert(0) += 1;
+        if !host.is_empty() {
+            *self.hosts.entry(host.to_string()).or_insert(0) += 1;
+        }
+        self.count_source(Source::of_spawn(runner, cache_hit, remote));
+    }
+
     pub fn apply(&mut self, ev: &Stamped) {
         let now = ev.t_ms;
         match &ev.event {
@@ -319,19 +338,16 @@ impl State {
                     st.1 += dur;
                 }
             }
-            Event::Spawn { cache_hit, remote, runner, host, .. } => {
-                self.spawns += 1;
-                if *cache_hit {
-                    self.cache_hits += 1;
+            Event::ActionResult { action, spawns } => {
+                if !self.spawn_counted.contains(&action.id) {
+                    for sp in spawns {
+                        self.count_spawn(&sp.runner, sp.cache_hit, sp.remote, "");
+                    }
                 }
-                if *remote {
-                    self.remote += 1;
-                }
-                *self.runners.entry(if runner.is_empty() { "?".into() } else { runner.clone() }).or_insert(0) += 1;
-                if !host.is_empty() {
-                    *self.hosts.entry(host.clone()).or_insert(0) += 1;
-                }
-                self.count_source(Source::of_spawn(runner, *cache_hit, *remote));
+            }
+            Event::Spawn { id, cache_hit, remote, runner, host, .. } => {
+                self.spawn_counted.insert(id.clone());
+                self.count_spawn(runner, *cache_hit, *remote, host);
             }
             Event::TargetComplete { label, failed, outputs } => {
                 self.targets.push(TargetDone { label: label.clone(), failed: *failed, outputs: outputs.clone() });

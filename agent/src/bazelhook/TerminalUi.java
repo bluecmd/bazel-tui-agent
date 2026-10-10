@@ -39,9 +39,13 @@ final class TerminalUi {
     if (outErr != null) {
       return true;
     }
-    Object handler = Reflect.call(env, "getUiEventHandler");
+    Object handler = Reflect.call(env, "getUiEventHandler"); // Bazel 9+
     if (handler == null) {
-      Object handlers = Reflect.field(env.getReporter(), "handlers");
+      // Older releases: find it in the reporter's handler list.
+      Object handlers = Reflect.field(env.getReporter(), "eventHandlers");
+      if (handlers == null) {
+        handlers = Reflect.field(env.getReporter(), "handlers");
+      }
       if (handlers instanceof Iterable) {
         for (Object h : (Iterable<?>) handlers) {
           if (h != null && h.getClass().getSimpleName().equals("UiEventHandler")) {

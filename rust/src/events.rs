@@ -115,6 +115,10 @@ pub enum Event {
     /// Bazel 9.3+: the client's terminal size as reported over the command server (columns
     /// only in practice; rows is 0). Sent on SIGWINCH, never at command start.
     TerminalSize { columns: u64, rows: u64 },
+    /// Bazel's result for one action (every executed or cache-served action), with its spawn
+    /// results; this is where remote and disk cache hits are visible on releases that post no
+    /// `Spawn` for them.
+    ActionResult { action: ActionRef, spawns: Vec<SpawnBrief> },
     /// One Bazel command (or help topic) for the interactive `help` finder.
     HelpCommand { name: String, summary: String, help: String },
     /// One documented option for the interactive `help` finder.
@@ -137,6 +141,16 @@ pub enum Event {
     /// Local action-cache hit: Bazel found the action up to date and skipped it (no spawn
     /// follows; this is the "N action cache hit" of Bazel's own summary).
     ActionCached { action: ActionRef },
+}
+
+/// One spawn result inside an `ActionResult`.
+#[derive(Clone, Debug, Serialize)]
+pub struct SpawnBrief {
+    pub runner: String,
+    pub cache_hit: bool,
+    pub remote: bool,
+    pub wall_ms: i64,
+    pub status: String,
 }
 
 /// An event with the server's wall-clock timestamp.

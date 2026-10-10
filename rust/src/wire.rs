@@ -14,7 +14,7 @@
 //!
 //! Strings arrive as the UTF-8 bytes Bazel keeps internally; invalid sequences are replaced.
 
-use crate::events::{ActionRef, Event, Message, Phase, Stamped};
+use crate::events::{ActionRef, Event, Message, Phase, SpawnBrief, Stamped};
 
 pub const TAG_COMMAND_STARTED: u8 = 1;
 pub const TAG_BUILD_STARTED: u8 = 2;
@@ -47,6 +47,7 @@ pub const TAG_TERMINAL_SIZE: u8 = 28;
 pub const TAG_HELP_COMMAND: u8 = 29;
 pub const TAG_HELP_OPTION: u8 = 30;
 pub const TAG_ACTION_CACHED: u8 = 31;
+pub const TAG_ACTION_RESULT: u8 = 32;
 
 struct Reader<'a> {
     buf: &'a [u8],
@@ -192,6 +193,15 @@ pub fn decode(buf: &[u8]) -> Option<Stamped> {
         TAG_HOOK_ERROR => Event::HookError { event_class: r.str()?, error: r.str()?, disabled: r.str()? },
         TAG_OTHER => Event::Other { class: r.str()? },
         TAG_TERMINAL_SIZE => Event::TerminalSize { columns: r.u64()?, rows: r.u64()? },
+        TAG_ACTION_RESULT => {
+            let action = r.action()?;
+            let n = r.u64()?.min(10_000) as usize;
+            let mut spawns = Vec::with_capacity(n);
+            for _ in 0..n {
+                spawns.push(SpawnBrief { runner: r.str()?, cache_hit: r.bool()?, remote: r.bool()?, wall_ms: r.i64()?, status: r.str()? });
+            }
+            Event::ActionResult { action, spawns }
+        }
         TAG_HELP_COMMAND => Event::HelpCommand { name: r.str()?, summary: r.str()?, help: r.str()? },
         TAG_HELP_OPTION => Event::HelpOption {
             name: r.str()?,
