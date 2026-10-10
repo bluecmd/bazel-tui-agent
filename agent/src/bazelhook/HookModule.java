@@ -60,6 +60,25 @@ public final class HookModule extends BlazeModule {
       forwarder = new EventForwarder(handle, ui, "1".equals(clientEnv.get("BAZEL_HOOK_ALL_EVENTS")));
       forwarder.start(env);
       listenForResizes(handle, ui);
+      if (wantUi) {
+        // The engine prints its own build result and test overview (the values Bazel would have
+        // used went out with COMMAND_STARTED, so the engine can honour them).
+        java.util.List<String> extra = new java.util.ArrayList<>();
+        if (EventForwarder.options(env, "com.google.devtools.build.lib.buildtool.BuildRequestOptions") != null) {
+          extra.add("--show_result=0");
+        }
+        if (EventForwarder.options(env, "com.google.devtools.build.lib.exec.ExecutionOptions") != null) {
+          extra.add("--test_summary=none");
+        }
+        if (!extra.isEmpty()) {
+          // Both ways: this parser for releases that keep it, the re-parse for those that do not.
+          parse(env, extra.toArray(new String[0]));
+          Agent.setExtraOptions(extra);
+        }
+        if ("help".equals(env.getCommandName()) && env.getOptions().getResidue().isEmpty()) {
+          HelpIndex.send(env, handle);
+        }
+      }
     } catch (Throwable t) {
       // The hook must never take the build down with it.
       env.getReporter().handle(Event.warn("bazel-hook: disabled after error: " + t));
@@ -70,7 +89,11 @@ public final class HookModule extends BlazeModule {
 
   @Override
   public void afterCommand() {
+    Agent.setExtraOptions(null);
     try {
+      if (ui != null) {
+        ui.interact();
+      }
       if (forwarder != null) {
         forwarder.finish();
       }

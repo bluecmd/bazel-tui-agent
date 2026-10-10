@@ -22,8 +22,36 @@ public final class Agent {
   private static volatile String jarPath = "";
   private static volatile long clientPid;
   private static volatile Object terminalSizeMonitor;
+  private static volatile List<String> extraOptions = List.of();
 
   private Agent() {}
+
+  /**
+   * Options appended to the command line of the running command. Bazel parses the command line a
+   * second time after {@code beforeCommand} (with a fresh parser carrying the main repo mapping),
+   * which drops anything a module parsed in {@code beforeCommand}; appending to that re-parse is
+   * the one place where a module's options survive.
+   */
+  public static void setExtraOptions(List<String> options) {
+    extraOptions = options == null ? List.of() : List.copyOf(options);
+  }
+
+  /** Called from the inlined advice; must stay public. */
+  public static List<String> withExtraOptions(List<String> args) {
+    List<String> extra = extraOptions;
+    if (extra.isEmpty() || args == null) {
+      return args;
+    }
+    List<String> out = new ArrayList<>(args.size() + extra.size());
+    int dash = args.indexOf("--");
+    // Options after a bare "--" would be read as targets: keep ours in front of it.
+    out.addAll(dash < 0 ? args : args.subList(0, dash));
+    out.addAll(extra);
+    if (dash >= 0) {
+      out.addAll(args.subList(dash, args.size()));
+    }
+    return out;
+  }
 
   /** Path of the jar this agent was loaded from. */
   public static String jarPath() {
@@ -109,6 +137,12 @@ public final class Agent {
         .transform(
             (builder, typeDescription, classLoader, module, protectionDomain) ->
                 builder.visit(Advice.to(ExecAdvice.class).on(ElementMatchers.named("exec"))))
+        .type(ElementMatchers.named("com.google.devtools.build.lib.runtime.BlazeOptionHandler"))
+        .transform(
+            (builder, typeDescription, classLoader, module, protectionDomain) ->
+                builder.visit(
+                    Advice.to(ParseAdvice.class)
+                        .on(ElementMatchers.nameStartsWith("parseOptions").and(ElementMatchers.takesArgument(0, List.class)))))
         .installOn(inst);
   }
 
@@ -133,6 +167,17 @@ public final class Agent {
     @SuppressWarnings("unused")
     public static void enter(@Advice.AllArguments Object[] args) {
       Agent.noteClientDescription(args);
+    }
+  }
+
+  /** Advice inlined at the start of {@code BlazeOptionHandler.parseOptions*(args, ...)}. */
+  public static final class ParseAdvice {
+    private ParseAdvice() {}
+
+    @Advice.OnMethodEnter
+    @SuppressWarnings("unused")
+    public static void enter(@Advice.Argument(value = 0, readOnly = false) List<String> args) {
+      args = Agent.withExtraOptions(args);
     }
   }
 

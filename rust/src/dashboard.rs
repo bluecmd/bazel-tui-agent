@@ -1,6 +1,6 @@
 //! The full-screen dashboard (alternate screen), used when the client's terminal size is known.
 //! Panels as in the original design: build header, server, parallelism and throughput graphs,
-//! running actions, build tree, mnemonics, runners and the log tail.
+//! running actions, build tree, mnemonics, cache sources and the log tail.
 
 use ratatui::backend::TestBackend;
 use ratatui::layout::{Constraint, Layout};
@@ -11,7 +11,7 @@ use ratatui::Terminal;
 use unicode_width::UnicodeWidthStr;
 
 use crate::render::{buffer_to_ansi, st, bold, dim, sparkline_levels};
-use crate::state::{ActState, Node, State};
+use crate::state::{ActState, Node, Source, State};
 use crate::text::*;
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -194,14 +194,13 @@ impl Dashboard {
         } else {
             server.push(Line::from(Span::styled("load …", st(MUTED))));
         }
-        if s.spawns > 0 {
-            let hit = s.cache_hits as f64 / s.spawns as f64;
+        if let Some(hit) = s.hit_rate() {
             let mut l = vec![Span::styled("cache", st(MUTED)), Span::raw(" ")];
             l.extend(bar_spans(hit, sbar, &[(0.0, (120, 120, 160)), (1.0, OK)]));
-            l.push(Span::raw(format!(" {}% of {}", (hit * 100.0) as u32, s.spawns)));
+            l.push(Span::raw(format!(" {}% of {}", (hit * 100.0) as u32, s.cache_total())));
             server.push(Line::from(l));
         } else {
-            server.push(Line::from(Span::styled("cache no spawns yet", st(MUTED))));
+            server.push(Line::from(Span::styled("cache no actions yet", st(MUTED))));
         }
 
         // ---- running panel content (downloads take its place until actions start)
@@ -245,7 +244,7 @@ impl Dashboard {
         let mut items: Vec<(&String, &(u64, u64))> = s.mnemonic_stats.iter().collect();
         items.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
         let top = items.first().map(|i| i.1 .0).unwrap_or(1).max(1);
-        let mut runners: Vec<(&String, &u64)> = s.runners.iter().collect();
+        let mut runners: Vec<(&String, &u64)> = s.runners.iter().filter(|(n, _)| Source::of_spawn(n, false, false) == Source::LocalExec).collect();
         runners.sort_by(|a, b| b.1.cmp(a.1));
 
         // ---- layout
@@ -351,7 +350,7 @@ impl Dashboard {
                 // bottom: mnemonics, runners, log
                 if bottom_h > 0 {
                     let mn_w = ((area.width as f32 * 0.3) as u16).max(34);
-                    let rn_w = ((area.width as f32 * 0.22) as u16).max(26);
+                    let rn_w = ((area.width as f32 * 0.25) as u16).max(26);
                     let bs = Layout::horizontal([Constraint::Length(mn_w), Constraint::Length(rn_w), Constraint::Fill(1)]).split(rows_c[3]);
                     let mb = panel("mnemonics", &format!("{} done", s.completed));
                     let mi = mb.inner(bs[0]);
@@ -371,21 +370,10 @@ impl Dashboard {
                         Line::from(l)
                     }).collect();
                     f.render_widget(Paragraph::new(mlines), mi);
-                    let rbk = panel("runners", &format!("{} remote", s.remote));
-                    let rni = rbk.inner(bs[1]);
-                    f.render_widget(rbk, bs[1]);
-                    let total = s.spawns.max(1) as f64;
-                    let rbarw = (rni.width as usize).saturating_sub(16 + 5).max(4);
-                    let mut rlines: Vec<Line> = runners.iter().take(rni.height as usize).map(|(name, n)| {
-                        let mut l = vec![Span::styled(format!("{:<15} ", name.chars().take(15).collect::<String>()), st(TITLE))];
-                        l.extend(bar_spans(**n as f64 / total, rbarw, COOL));
-                        l.push(Span::raw(format!("{:>4}%", (**n as f64 / total * 100.0) as u32)));
-                        Line::from(l)
-                    }).collect();
-                    if !s.hosts.is_empty() && rlines.len() < rni.height as usize {
-                        rlines.push(Line::from(Span::styled(format!("{} remote hosts", s.hosts.len()), st(MUTED))));
-                    }
-                    f.render_widget(Paragraph::new(rlines), rni);
+                    let cb = panel("cache", &format!("{} actions", with_commas(s.cache_total())));
+                    let ci = cb.inner(bs[1]);
+                    f.render_widget(cb, bs[1]);
+                    f.render_widget(Paragraph::new(cache_lines(s, &runners, ci.width as usize, ci.height as usize)), ci);
                     let lb = panel("log", &format!("{} lines  [l]", log.len()));
                     let li = lb.inner(bs[2]);
                     f.render_widget(lb, bs[2]);
@@ -406,6 +394,155 @@ impl Dashboard {
         let text = buffer_to_ansi(self.term.backend().buffer(), self.rows as usize, self.color);
         text.split('\n').map(|l| l.to_string()).collect()
     }
+}
+
+/// Colour of each action source in the cache panel (same order as `Source::ALL`).
+pub fn source_rgb(src: Source) -> (u8, u8, u8) {
+    match src {
+        Source::ActionCache => OK,
+        Source::RemoteCache => ACCENT,
+        Source::DiskCache => (120, 200, 255),
+        Source::RemoteExec => WARN,
+        Source::LocalExec => (220, 140, 255),
+    }
+}
+
+const HIT_GRADIENT: &[(f32, (u8, u8, u8))] = &[(0.0, BAD), (0.5, WARN), (1.0, OK)];
+
+/// Splits `width` cells between the sources in proportion to their counts; every non-zero
+/// source gets at least one cell when there is room.
+fn stacked_widths(counts: &[u64], width: usize) -> Vec<usize> {
+    let total: u64 = counts.iter().sum();
+    if total == 0 || width == 0 {
+        return vec![0; counts.len()];
+    }
+    let mut widths = Vec::with_capacity(counts.len());
+    let (mut cum, mut prev) = (0u64, 0usize);
+    for c in counts {
+        cum += c;
+        let b = ((cum as f64 / total as f64) * width as f64).round() as usize;
+        widths.push(b.saturating_sub(prev));
+        prev = b;
+    }
+    for i in 0..counts.len() {
+        if counts[i] > 0 && widths[i] == 0 {
+            if let Some(j) = (0..counts.len()).filter(|j| widths[*j] > 1).max_by_key(|j| widths[*j]) {
+                widths[j] -= 1;
+                widths[i] = 1;
+            }
+        }
+    }
+    widths
+}
+
+/// One-row sparkline of the hit rate: each column folds a slice of the history (mean of the
+/// windows that had actions); a column without any action stays blank.
+fn hit_sparkline(hist: &[f32], cols: usize) -> Vec<Span<'static>> {
+    const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    if hist.is_empty() || cols == 0 {
+        return Vec::new();
+    }
+    let per = (hist.len() as f32 / cols as f32).max(1.0);
+    let mut out = Vec::with_capacity(cols);
+    let mut i = 0.0f32;
+    while (i as usize) < hist.len() && out.len() < cols {
+        let end = ((i + per) as usize).min(hist.len()).max(i as usize + 1);
+        let active: Vec<f32> = hist[i as usize..end].iter().copied().filter(|v| *v >= 0.0).collect();
+        if active.is_empty() {
+            out.push(Span::styled("·", st((45, 50, 65))));
+        } else {
+            let rate = active.iter().sum::<f32>() / active.len() as f32;
+            out.push(Span::styled(BLOCKS[((rate * 7.0).round() as usize).min(7)].to_string(), st(gradient(HIT_GRADIENT, rate))));
+        }
+        i += per;
+    }
+    out
+}
+
+/// The cache panel: a stacked bar of where actions came from, the hit rate, one legend line
+/// per source, the hit rate over time and (with room) the local runners.
+fn cache_lines(s: &State, local_runners: &[(&String, &u64)], width: usize, height: usize) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line> = Vec::new();
+    if height == 0 {
+        return lines;
+    }
+    let total = s.cache_total();
+    let counts: Vec<u64> = Source::ALL.iter().map(|src| s.source_count(*src)).collect();
+
+    // Row 0: stacked bar + bold hit rate.
+    let pct = match s.hit_rate() {
+        Some(r) => format!("{:>3}%", (r * 100.0).round() as u32),
+        None => "  —".to_string(),
+    };
+    let barw = width.saturating_sub(pct.width() + 1).max(4);
+    let mut bar: Vec<Span> = Vec::new();
+    if total == 0 {
+        bar.push(Span::styled("░".repeat(barw), st((45, 50, 65))));
+    } else {
+        for (src, w) in Source::ALL.iter().zip(stacked_widths(&counts, barw)) {
+            if w > 0 {
+                bar.push(Span::styled("█".repeat(w), st(source_rgb(*src))));
+            }
+        }
+    }
+    bar.push(Span::raw(" "));
+    bar.push(Span::styled(pct, bold(if s.hit_rate().unwrap_or(0.0) >= 0.5 { OK } else { TITLE })));
+    lines.push(Line::from(bar));
+
+    // Legend: only sources seen so far, in a fixed order so colours stay put.
+    let seen: Vec<(Source, u64)> = Source::ALL.iter().copied().zip(counts.iter().copied()).filter(|(_, c)| *c > 0).collect();
+    if seen.is_empty() {
+        if height > 1 {
+            lines.push(Line::from(Span::styled("no actions yet", st(MUTED))));
+        }
+        return lines;
+    }
+    // Legend first; the sparkline only when every source still fits above it.
+    let show_sparkline = height >= 2 + seen.len() && !s.history_hit.is_empty();
+    let legend_rows = height - 1 - usize::from(show_sparkline);
+    let show_count = width >= 27;
+    for (i, (src, c)) in seen.iter().enumerate() {
+        if i >= legend_rows {
+            break;
+        }
+        let rest = seen.len() - i;
+        let mut l = vec![Span::styled("■ ", st(source_rgb(*src)))];
+        if i + 1 == legend_rows && rest > 1 {
+            // Fold the remaining sources into one line rather than hiding them.
+            let other: u64 = seen[i..].iter().map(|(_, c)| c).sum();
+            l.push(Span::styled(format!("{:<12}", format!("{} more", rest)), st(MUTED)));
+            l.push(Span::styled(format!("{:>4}%", other * 100 / total.max(1)), st(MUTED)));
+            lines.push(Line::from(l));
+            break;
+        }
+        l.push(Span::styled(format!("{:<12}", src.name()), st(if src.is_hit() { TITLE } else { MUTED })));
+        if show_count {
+            l.push(Span::raw(format!("{:>6}", with_commas(*c))));
+        }
+        l.push(Span::styled(format!("{:>4}%", c * 100 / total.max(1)), st(source_rgb(*src))));
+        lines.push(Line::from(l));
+    }
+    if show_sparkline && lines.len() < height {
+        // The window in progress counts too, so the strip moves as actions come in.
+        let mut hist = s.history_hit.clone();
+        let (dh, dt) = (s.cache_hit_count() - s.hit_last.1, total - s.hit_last.2);
+        if dt > 0 {
+            hist.push(dh as f32 / dt as f32);
+        }
+        let mut l = vec![Span::styled("rate ", st(MUTED))];
+        l.extend(hit_sparkline(&hist, width.saturating_sub(5)));
+        lines.push(Line::from(l));
+    }
+    // Spare rows: how local execution split between runners (sandbox, worker, local ...).
+    if lines.len() < height && !local_runners.is_empty() {
+        let local: u64 = local_runners.iter().map(|(_, n)| **n).sum::<u64>().max(1);
+        let parts: Vec<String> = local_runners.iter().take(3).map(|(n, c)| format!("{} {}%", n.chars().take(14).collect::<String>(), **c * 100 / local)).collect();
+        lines.push(Line::from(Span::styled(format!("local: {}", parts.join(" · ")).chars().take(width).collect::<String>(), dim())));
+    }
+    if lines.len() < height && !s.hosts.is_empty() {
+        lines.push(Line::from(Span::styled(format!("{} remote hosts", s.hosts.len()), dim())));
+    }
+    lines
 }
 
 /// Strips ANSI escapes from a captured log line (the panel applies its own styling).
@@ -506,4 +643,67 @@ fn tree_lines(s: &State, now: i64, height: usize, width: usize, by_size: bool) -
         lines[height - 1] = Line::from(Span::styled("   …", st(MUTED)));
     }
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::{ActionRef, Event, Stamped};
+
+    fn spawn(runner: &str, cache_hit: bool, remote: bool) -> Event {
+        Event::Spawn {
+            id: "x".into(), mnemonic: "Genrule".into(), runner: runner.into(), runner_subtype: String::new(), host: String::new(),
+            status: "SUCCESS".into(), exit_code: 0, cache_hit, remote, wall_ms: 10,
+        }
+    }
+
+    fn synthetic() -> State {
+        let mut s = State::default();
+        let mut t = 1_000_000i64;
+        let mut push = |s: &mut State, ev: Event| {
+            t += 300;
+            s.apply(&Stamped { t_ms: t, event: ev });
+            s.sample(t);
+        };
+        push(&mut s, Event::CommandStarted { command: "build".into(), command_id: String::new(), workspace: String::new(), cwd: String::new(), args: vec!["//...".into()], start_ms: 1_000_000, bazel_version: String::new(), agent_jar: String::new(), agent_jar_mtime_ms: 0 });
+        push(&mut s, Event::BuildStarted { targets: vec![], build_id: String::new() });
+        for i in 0..40 {
+            let ev = match i % 8 {
+                0 | 1 | 2 => Event::ActionCached { action: ActionRef { id: format!("a{}", i), ..Default::default() } },
+                3 | 4 => spawn("remote cache hit", true, true),
+                5 => spawn("disk cache hit", true, false),
+                6 => spawn("remote", false, true),
+                _ => spawn(if i % 16 == 7 { "worker" } else { "linux-sandbox" }, false, false),
+            };
+            push(&mut s, ev);
+        }
+        s
+    }
+
+    #[test]
+    fn stacked_bar_sums_to_width_and_keeps_small_sources_visible() {
+        assert_eq!(stacked_widths(&[1, 0, 999], 20).iter().sum::<usize>(), 20);
+        assert_eq!(stacked_widths(&[1, 0, 999], 20)[0], 1);
+        assert_eq!(stacked_widths(&[0, 0, 0], 20), vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn cache_panel_fits_small_and_large_terminals() {
+        let s = synthetic();
+        assert_eq!(s.cache_total(), 40);
+        assert_eq!(s.source_count(Source::ActionCache), 15);
+        assert_eq!(s.source_count(Source::LocalExec), 5);
+        for (cols, rows) in [(80u16, 20u16), (120, 40), (200, 60)] {
+            let mut d = Dashboard::new(cols, rows, false);
+            let frame = d.render(&s, &[], 1_100_000);
+            let text = frame.join("\n");
+            if std::env::var("SHOW").is_ok() {
+                println!("---- {}x{}\n{}", cols, rows, text);
+            }
+            assert_eq!(frame.len(), rows as usize);
+            assert!(text.contains("cache"), "no cache panel at {}x{}", cols, rows);
+            assert!(text.contains("action cache") || text.contains("more"), "no legend at {}x{}", cols, rows);
+            assert!(text.contains("75%"), "hit rate missing at {}x{}", cols, rows);
+        }
+    }
 }

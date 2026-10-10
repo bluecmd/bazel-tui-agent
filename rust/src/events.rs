@@ -50,6 +50,12 @@ pub enum Event {
         bazel_version: String,
         agent_jar: String,
         agent_jar_mtime_ms: i64,
+        /// Where exec paths resolve (`<output_base>/execroot/<workspace>`).
+        exec_root: String,
+        /// Bazel's `--show_result` threshold (-1 for commands without it).
+        show_result: i64,
+        /// Bazel's `--test_summary` format in lower case ("" for commands without it).
+        test_summary: String,
     },
     BuildStarted { targets: Vec<String>, build_id: String },
     Phase { phase: Phase },
@@ -77,7 +83,8 @@ pub enum Event {
         wall_ms: i64,
     },
     TargetAnalyzed { label: String },
-    TargetComplete { label: String, failed: bool },
+    /// `outputs`: exec paths of the files Bazel's result printer would list for the target.
+    TargetComplete { label: String, failed: bool, outputs: Vec<String> },
     TestAnalyzed { label: String },
     TestFilteringComplete { targets: u64, tests: u64, skipped: u64 },
     TestSummary {
@@ -89,6 +96,11 @@ pub enum Event {
         failed_cases: u64,
         total_cases: u64,
         time_ms: u64,
+        failed_logs: Vec<String>,
+        passed_logs: Vec<String>,
+        failed_case_names: Vec<String>,
+        attempts: u64,
+        wrong_size: bool,
     },
     BuildComplete { success: bool, catastrophe: bool, exit_code: i64, stop_ms: i64 },
     NoBuild,
@@ -103,6 +115,28 @@ pub enum Event {
     /// Bazel 9.3+: the client's terminal size as reported over the command server (columns
     /// only in practice; rows is 0). Sent on SIGWINCH, never at command start.
     TerminalSize { columns: u64, rows: u64 },
+    /// One Bazel command (or help topic) for the interactive `help` finder.
+    HelpCommand { name: String, summary: String, help: String },
+    /// One documented option for the interactive `help` finder.
+    HelpOption {
+        name: String,
+        abbrev: String,
+        value_type: String,
+        default: String,
+        category: String,
+        help: String,
+        commands: Vec<String>,
+        effect_tags: Vec<String>,
+        metadata_tags: Vec<String>,
+        expansion: Vec<String>,
+        deprecation: String,
+        old_name: String,
+        multiple: bool,
+        boolean_syntax: bool,
+    },
+    /// Local action-cache hit: Bazel found the action up to date and skipped it (no spawn
+    /// follows; this is the "N action cache hit" of Bazel's own summary).
+    ActionCached { action: ActionRef },
 }
 
 /// An event with the server's wall-clock timestamp.

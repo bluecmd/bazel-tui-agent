@@ -74,6 +74,10 @@ impl Renderer {
         self.term.clear().ok();
     }
 
+    pub fn width(&self) -> usize {
+        self.width as usize + 1
+    }
+
     pub fn toggle_tree_order(&mut self) {
         self.tree_by_size = !self.tree_by_size;
     }
@@ -399,49 +403,6 @@ impl Renderer {
             .ok();
         buffer_to_ansi(self.term.backend().buffer(), used, self.color)
     }
-
-    /// Bazel's own completion line (normally produced inside its UI handler, which is silenced
-    /// here) followed by the hook's timing summary.
-    pub fn summary(&self, s: &State, now: i64) -> String {
-        let success = match s.build_success {
-            Some(v) => v,
-            None => return String::new(),
-        };
-        let sty = Style_ { enabled: self.color };
-        let completion = if success {
-            let failed_tests = s.tests.values().filter(|t| t.status != "PASSED" && t.status != "NO_STATUS").count();
-            let mut m = String::from("Build completed");
-            if failed_tests == 0 {
-                m.push_str(" successfully");
-            } else {
-                m.push_str(&format!(", {} test{} FAILED", failed_tests, if failed_tests == 1 { "" } else { "s" }));
-            }
-            m.push_str(&format!(", {} total action{}", s.completed, if s.completed == 1 { "" } else { "s" }));
-            format!("{}INFO:{} {}", sty.code("\x1b[32m"), sty.code(RESET), m)
-        } else {
-            format!("{}ERROR:{} Build did NOT complete successfully", sty.code("\x1b[31;1m"), sty.code(RESET))
-        };
-        let total = (now - s.t0_ms) as f64 / 1000.0;
-        let mut parts = Vec::new();
-        let order = ["loading", "analysis", "execution", "finished"];
-        let times: Vec<(&str, i64)> = order.iter().filter_map(|p| s.phase_t.get(*p).map(|t| (*p, *t))).collect();
-        for w in times.windows(2) {
-            if w[0].0 != "finished" {
-                parts.push(format!("{} {}", w[0].0, fmt_duration((w[1].1 - w[0].1) as f64 / 1000.0)));
-            }
-        }
-        if s.completed > 0 {
-            parts.push(format!("{} actions", with_commas(s.completed)));
-        }
-        if s.spawns > 0 {
-            parts.push(format!("{}% cache hits", s.cache_hits * 100 / s.spawns));
-        }
-        if s.peak_running > 0 {
-            parts.push(format!("peak {} parallel", s.peak_running));
-        }
-        let mark = if success { sty.rgb_bold("✔", OK) } else { sty.rgb_bold("✘", BAD) };
-        format!("{}\n{} {} {}  {}", completion, mark, sty.bold(s.command.as_deref().unwrap_or("build")), sty.bold(&fmt_duration(total)), sty.dim(&parts.join(" · ")))
-    }
 }
 
 /// Folds a whole history into `cols` buckets (max of each) scaled to sparkline levels 0..8,
@@ -461,25 +422,6 @@ pub(crate) fn sparkline_levels(hist: &[f32], cols: usize, vmax: f32) -> Vec<u64>
         i += per;
     }
     out
-}
-
-struct Style_ {
-    enabled: bool,
-}
-
-impl Style_ {
-    fn code(&self, c: &str) -> String {
-        if self.enabled { c.to_string() } else { String::new() }
-    }
-    fn rgb_bold(&self, t: &str, c: (u8, u8, u8)) -> String {
-        if self.enabled { format!("\x1b[38;5;{}m\x1b[1m{}{}", cube(c.0, c.1, c.2), t, RESET) } else { t.to_string() }
-    }
-    fn bold(&self, t: &str) -> String {
-        if self.enabled { format!("\x1b[1m{}{}", t, RESET) } else { t.to_string() }
-    }
-    fn dim(&self, t: &str) -> String {
-        if self.enabled { format!("\x1b[2m{}{}", t, RESET) } else { t.to_string() }
-    }
 }
 
 fn sgr(color: Color, bg: bool) -> Option<String> {

@@ -69,5 +69,8 @@ final class Native {
   /** Final bytes at the end of the command, same framing. */
   static native byte[] finish(long handle, long nowMs);
 
+  /** True while the engine owns the terminal interactively (the help finder) and must be polled. */
+  static native boolean busy(long handle);
+
   static native void destroy(long handle);
 }

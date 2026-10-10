@@ -87,10 +87,47 @@ final class EventForwarder implements EventHandler {
             .i64(env.getCommandStartTime())
             .str(Agent.bazelVersion())
             .str(Agent.jarPath())
-            .i64(Agent.jarMtimeMs()));
+            .i64(Agent.jarMtimeMs())
+            .str(execRoot(env))
+            .i64(showResult(env))
+            .str(testSummary(env)));
     env.getEventBus().register(this);
     env.getReporter().addHandler(this);
     poller.scheduleAtFixedRate(this::pollProgress, 100, 100, TimeUnit.MILLISECONDS);
+  }
+
+  /** The parsed options of one options class, by class name; null when this command lacks it. */
+  @SuppressWarnings({"unchecked", "rawtypes"})
+  static Object options(CommandEnvironment env, String className) {
+    try {
+      Class<?> cls = Class.forName(className, false, CommandEnvironment.class.getClassLoader());
+      return env.getOptions().getOptions((Class) cls);
+    } catch (ClassNotFoundException | RuntimeException e) {
+      return null;
+    }
+  }
+
+  /** The exec root, or "" when this release cannot name it yet at this point (Bazel 6). */
+  private static String execRoot(CommandEnvironment env) {
+    try {
+      return env.getExecRoot().getPathString();
+    } catch (RuntimeException e) {
+      return "";
+    }
+  }
+
+  /** Bazel's --show_result threshold, or -1 for commands without it. */
+  private static long showResult(CommandEnvironment env) {
+    Object o = options(env, "com.google.devtools.build.lib.buildtool.BuildRequestOptions");
+    Object v = o == null ? null : Reflect.field(o, "maxResultTargets");
+    return v instanceof Number ? ((Number) v).longValue() : -1;
+  }
+
+  /** Bazel's --test_summary format in lower case ("short", "terse", ...), or "". */
+  private static String testSummary(CommandEnvironment env) {
+    Object o = options(env, "com.google.devtools.build.lib.exec.ExecutionOptions");
+    Object v = o == null ? null : Reflect.field(o, "testSummary");
+    return v == null ? "" : v.toString().toLowerCase(java.util.Locale.ROOT);
   }
 
   void finish() {
@@ -234,7 +271,18 @@ final class EventForwarder implements EventHandler {
     });
     on(LIB + "analysis.TargetCompleteEvent", e -> {
       TargetCompleteEvent ev = (TargetCompleteEvent) e;
-      return new Packet(Packet.TARGET_COMPLETE).str(ev.getLabel().toString()).bool(ev.failed());
+      // The files Bazel's own result printer would list ("Target //x up-to-date: ...").
+      List<String> outputs = new ArrayList<>();
+      if (!ev.failed()) {
+        for (Artifact a : ev.getLegacyFilteredImportantArtifacts()) {
+          if (outputs.size() >= 1000) {
+            break;
+          }
+          // Absolute, so the engine can stat it and map it to the bazel-bin symlink on every release.
+          outputs.add(a.getPath() != null ? a.getPath().getPathString() : a.getExecPathString());
+        }
+      }
+      return new Packet(Packet.TARGET_COMPLETE).str(ev.getLabel().toString()).bool(ev.failed()).list(outputs);
     });
     on(LIB + "buildtool.buildevent.BuildStartingEvent", e -> {
       Object request = Reflect.call(e, "request", "getRequest");
@@ -289,6 +337,15 @@ final class EventForwarder implements EventHandler {
       for (Long t : ev.getTestTimes()) {
         totalMs += t;
       }
+      List<String> failedCases = new ArrayList<>();
+      for (Object c : ev.getFailedTestCases()) {
+        if (failedCases.size() >= 200) {
+          break;
+        }
+        String cls = nz(Reflect.str(c, "getClassName"));
+        String name = nz(Reflect.str(c, "getName"));
+        failedCases.add(cls.isEmpty() ? name : cls + "." + name);
+      }
       return new Packet(Packet.TEST_SUMMARY)
           .str(ev.getLabel().toString())
           .str(ev.getStatus().name())
@@ -297,7 +354,12 @@ final class EventForwarder implements EventHandler {
           .bool(ev.isSkipped())
           .i64(ev.getFailedTestCases().size())
           .i64(ev.getTotalTestCases())
-          .i64(totalMs);
+          .i64(totalMs)
+          .list(ev.getFailedLogs())
+          .list(ev.getPassedLogs())
+          .list(failedCases)
+          .i64(ev.getNumAttempts())
+          .bool(ev.wasUnreportedWrongSize());
     });
     on(LIB + "buildtool.buildevent.BuildCompleteEvent", e -> {
       BuildCompleteEvent ev = (BuildCompleteEvent) e;
@@ -316,6 +378,10 @@ final class EventForwarder implements EventHandler {
       FetchProgress ev = (FetchProgress) e;
       return new Packet(Packet.FETCH).str(ev.getResourceIdentifier()).str(ev.getProgress()).bool(ev.isFinished());
     });
+    // Local action-cache hit: Bazel skipped the action entirely (the "N action cache hit" of its
+    // summary). No spawn is produced for these, so they are the only way to count them.
+    on(LIB + "actions.CachedActionEvent", e ->
+        action(new Packet(Packet.ACTION_CACHED), (ActionExecutionMetadata) Reflect.call(e, "getAction", "action")));
   }
 
   private static Packet action(Packet p, ActionExecutionMetadata a) {

@@ -35,13 +35,77 @@ pub struct Node {
 }
 
 pub struct TestResult {
+    pub label: String,
     pub status: String,
+    pub runs: u64,
+    pub cached: bool,
+    pub skipped: bool,
+    pub failed_cases: u64,
+    pub total_cases: u64,
+    pub time_ms: u64,
+    pub failed_logs: Vec<String>,
+    pub passed_logs: Vec<String>,
+    pub failed_case_names: Vec<String>,
+    pub attempts: u64,
+    pub wrong_size: bool,
+}
+
+/// A top-level target as reported complete, with the files Bazel would list for it.
+pub struct TargetDone {
+    pub label: String,
+    pub failed: bool,
+    pub outputs: Vec<String>,
+}
+
+/// Where an action's work came from, for the cache panel. Local action-cache hits are
+/// `ActionCached` events (Bazel skipped the action); the rest are classified from the spawn's
+/// runner name ("remote cache hit", "disk cache hit", "remote", "linux-sandbox", "worker", ...).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    ActionCache,
+    RemoteCache,
+    DiskCache,
+    RemoteExec,
+    LocalExec,
+}
+
+impl Source {
+    pub const ALL: [Source; 5] = [Source::ActionCache, Source::RemoteCache, Source::DiskCache, Source::RemoteExec, Source::LocalExec];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Source::ActionCache => "action cache",
+            Source::RemoteCache => "remote cache",
+            Source::DiskCache => "disk cache",
+            Source::RemoteExec => "remote exec",
+            Source::LocalExec => "local exec",
+        }
+    }
+
+    pub fn is_hit(self) -> bool {
+        matches!(self, Source::ActionCache | Source::RemoteCache | Source::DiskCache)
+    }
+
+    pub fn of_spawn(runner: &str, cache_hit: bool, remote: bool) -> Source {
+        let r = runner.to_ascii_lowercase();
+        if r.contains("cache") || cache_hit {
+            if r.contains("disk") || (!r.contains("remote") && !remote) { Source::DiskCache } else { Source::RemoteCache }
+        } else if remote || r == "remote" {
+            Source::RemoteExec
+        } else {
+            Source::LocalExec
+        }
+    }
 }
 
 #[derive(Default)]
 pub struct State {
     pub command: Option<String>,
     pub args: Vec<String>,
+    pub workspace: String,
+    pub exec_root: String,
+    pub show_result: i64,
+    pub test_summary: String,
     pub t0_ms: i64,
     pub phase: String,
     pub phase_t: HashMap<String, i64>,
@@ -59,6 +123,9 @@ pub struct State {
     pub failed_actions: u64,
     pub peak_running: u64,
     pub tests: HashMap<String, TestResult>,
+    /// Labels in completion order (tests and targets).
+    pub targets: Vec<TargetDone>,
+    pub help: Vec<crate::help::Item>,
     pub warnings: u64,
     pub errors: u64,
     pub build_success: Option<bool>,
@@ -80,6 +147,13 @@ pub struct State {
     pub load: f64,
     pub cpus: u64,
     pub tree: Node,
+    /// Cache panel: actions per `Source` (indexed by position in `Source::ALL`), local
+    /// action-cache hits counted from `ActionCached`, the rest from `Spawn`.
+    pub sources: [u64; 5],
+    /// Hit rate per one-second window (0..1), -1 for windows without any action; sampled in `sample`.
+    pub history_hit: Vec<f32>,
+    /// (time, hits, total) at the previous hit-rate sample.
+    pub hit_last: (i64, u64, u64),
 }
 
 /// '@@repo//a/b:c' -> ['@repo', 'a', 'b', ':c']; '//x:y' -> ['//', 'x', ':y'].
@@ -162,12 +236,17 @@ impl State {
     pub fn apply(&mut self, ev: &Stamped) {
         let now = ev.t_ms;
         match &ev.event {
-            Event::CommandStarted { command, args, .. } => {
+            Event::CommandStarted { command, args, workspace, exec_root, show_result, test_summary, .. } => {
                 self.command = Some(command.clone());
                 self.args = args.clone();
+                self.workspace = workspace.clone();
+                self.exec_root = exec_root.clone();
+                self.show_result = *show_result;
+                self.test_summary = test_summary.clone();
                 self.t0_ms = now;
                 self.tp_last = (now, 0);
                 self.last_sample_ms = now;
+                self.hit_last = (now, 0, 0);
             }
             Event::BuildStarted { .. } => {
                 self.build_started = true;
@@ -252,10 +331,51 @@ impl State {
                 if !host.is_empty() {
                     *self.hosts.entry(host.clone()).or_insert(0) += 1;
                 }
+                self.count_source(Source::of_spawn(runner, *cache_hit, *remote));
             }
-            Event::TestSummary { label, status, .. } => {
-                self.tests.insert(label.clone(), TestResult { status: status.clone() });
+            Event::TargetComplete { label, failed, outputs } => {
+                self.targets.push(TargetDone { label: label.clone(), failed: *failed, outputs: outputs.clone() });
             }
+            Event::TestSummary { label, status, runs, cached, skipped, failed_cases, total_cases, time_ms, failed_logs, passed_logs, failed_case_names, attempts, wrong_size } => {
+                self.tests.insert(
+                    label.clone(),
+                    TestResult {
+                        label: label.clone(),
+                        status: status.clone(),
+                        runs: *runs,
+                        cached: *cached,
+                        skipped: *skipped,
+                        failed_cases: *failed_cases,
+                        total_cases: *total_cases,
+                        time_ms: *time_ms,
+                        failed_logs: failed_logs.clone(),
+                        passed_logs: passed_logs.clone(),
+                        failed_case_names: failed_case_names.clone(),
+                        attempts: *attempts,
+                        wrong_size: *wrong_size,
+                    },
+                );
+            }
+            Event::HelpCommand { name, summary, help } => self.help.push(crate::help::Item::command(name, summary, help)),
+            Event::HelpOption { name, abbrev, value_type, default, category, help, commands, effect_tags, metadata_tags, expansion, deprecation, old_name, multiple, boolean_syntax } => {
+                self.help.push(crate::help::Item::option(crate::help::OptionDoc {
+                    name: name.clone(),
+                    abbrev: abbrev.clone(),
+                    value_type: value_type.clone(),
+                    default: default.clone(),
+                    category: category.clone(),
+                    help: help.clone(),
+                    commands: commands.clone(),
+                    effect_tags: effect_tags.clone(),
+                    metadata_tags: metadata_tags.clone(),
+                    expansion: expansion.clone(),
+                    deprecation: deprecation.clone(),
+                    old_name: old_name.clone(),
+                    multiple: *multiple,
+                    boolean_syntax: *boolean_syntax,
+                }))
+            }
+            Event::ActionCached { .. } => self.count_source(Source::ActionCache),
             Event::Message(m) => match m.kind.as_str() {
                 "WARNING" => self.warnings += 1,
                 "ERROR" | "FATAL" => self.errors += 1,
@@ -280,6 +400,11 @@ impl State {
             }
             _ => {}
         }
+    }
+
+    /// `help` with no topic: the interactive finder replaces Bazel's usage text.
+    pub fn interactive_help(&self) -> bool {
+        self.command.as_deref() == Some("help") && self.args.is_empty()
     }
 
     /// Commands that run a build and therefore get the live UI from their first tick. Everything
@@ -310,6 +435,39 @@ impl State {
         if self.history_tp.len() > 600 {
             self.history_tp.drain(..self.history_tp.len() - 600);
         }
+        if now - self.hit_last.0 >= 1000 {
+            let (hits, total) = (self.cache_hit_count(), self.cache_total());
+            let (dh, dt) = (hits - self.hit_last.1, total - self.hit_last.2);
+            self.history_hit.push(if dt > 0 { dh as f32 / dt as f32 } else { -1.0 });
+            self.hit_last = (now, hits, total);
+        }
+        if self.history_hit.len() > 600 {
+            self.history_hit.drain(..self.history_hit.len() - 600);
+        }
+    }
+
+    fn count_source(&mut self, src: Source) {
+        self.sources[Source::ALL.iter().position(|s| *s == src).unwrap_or(0)] += 1;
+    }
+
+    pub fn source_count(&self, src: Source) -> u64 {
+        self.sources[Source::ALL.iter().position(|s| *s == src).unwrap_or(0)]
+    }
+
+    /// Actions accounted for by the cache panel: action-cache hits plus every spawn.
+    pub fn cache_total(&self) -> u64 {
+        self.sources.iter().sum()
+    }
+
+    /// Actions that were not executed: action-cache, remote-cache and disk-cache hits.
+    pub fn cache_hit_count(&self) -> u64 {
+        Source::ALL.iter().filter(|s| s.is_hit()).map(|s| self.source_count(*s)).sum()
+    }
+
+    /// Overall hit rate 0..1, when anything has been counted.
+    pub fn hit_rate(&self) -> Option<f64> {
+        let t = self.cache_total();
+        if t > 0 { Some(self.cache_hit_count() as f64 / t as f64) } else { None }
     }
 
     pub fn running_sorted(&self) -> Vec<&Action> {

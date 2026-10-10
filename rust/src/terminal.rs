@@ -3,10 +3,15 @@
 
 use crate::dashboard::Dashboard;
 use crate::events::Message;
-use crate::pty::Pty;
+use crate::help::{self, Finder};
+use crate::pty::{Key, Pty};
 use crate::render::Renderer;
 use crate::state::State;
+use crate::summary;
 use crate::text::RESET;
+
+const ENTER_ALT: &[u8] = b"\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[H\x1b[2J";
+const LEAVE_ALT: &[u8] = b"\x1b[?7h\x1b[?1049l\x1b[?25h";
 
 /// Bytes destined for the two client streams.
 #[derive(Default)]
@@ -46,6 +51,14 @@ pub struct Terminal {
     partial: String,
     /// Size reported by Bazel's own resize RPC (9.3+), used when the pty is not available.
     reported: Option<(u16, u16)>,
+    command: String,
+    /// Inside one of Bazel's test statistics lines, which arrive in several stdout writes.
+    swallow_stdout_line: bool,
+    /// `bazel help` on an interactive terminal: Bazel's usage text is held back and the finder
+    /// takes the screen until the user picks an entry or quits.
+    help_mode: bool,
+    finder: Option<Finder>,
+    help_done: bool,
 }
 
 impl Terminal {
@@ -64,6 +77,11 @@ impl Terminal {
             log_lines: Vec::new(),
             partial: String::new(),
             reported: None,
+            command: String::new(),
+            swallow_stdout_line: false,
+            help_mode: false,
+            finder: None,
+            help_done: false,
         };
         t.sync_size();
         t
@@ -115,20 +133,30 @@ impl Terminal {
         }
     }
 
+    /// The command just started: decide whether this is an interactive `help`.
+    pub fn command_started(&mut self, state: &State) {
+        self.command = state.command.clone().unwrap_or_default();
+        self.help_mode = state.interactive_help() && self.pty.as_ref().map_or(false, |p| p.interactive()) && self.current_size().is_some();
+    }
+
+    /// True while the help finder owns the screen; the Java side keeps polling until it is not.
+    pub fn busy(&self) -> bool {
+        self.help_mode && self.finder.is_some() && !self.help_done
+    }
+
     /// Keys typed at the client's terminal: `+`/`-` block height, `t` tree order, `l` big log.
-    fn handle_keys(&mut self) {
-        let Some(keys) = self.pty.as_ref().map(|p| p.read_keys()) else { return };
+    fn handle_keys(&mut self, keys: Vec<Key>) {
         for k in keys {
             match k {
-                b'+' | b'=' => self.renderer.adjust_rows(1),
-                b'-' | b'_' => self.renderer.adjust_rows(-1),
-                b't' => {
+                Key::Char('+') | Key::Char('=') => self.renderer.adjust_rows(1),
+                Key::Char('-') | Key::Char('_') => self.renderer.adjust_rows(-1),
+                Key::Char('t') => {
                     self.renderer.toggle_tree_order();
                     if let Some(d) = self.dashboard.as_mut() {
                         d.tree_by_size = !d.tree_by_size;
                     }
                 }
-                b'l' => {
+                Key::Char('l') => {
                     if let Some(d) = self.dashboard.as_mut() {
                         d.show_log_big = !d.show_log_big;
                     }
@@ -136,6 +164,28 @@ impl Terminal {
                 _ => {}
             }
         }
+    }
+
+    fn read_keys(&self) -> Vec<Key> {
+        self.pty.as_ref().map(|p| p.read_keys()).unwrap_or_default()
+    }
+
+    /// Bazel's own test statistics lines ("Executed 3 out of 4 tests: ..." and the test-size
+    /// hint), replaced by the overview in `summary.rs`.
+    fn is_bazel_test_stats(&mut self, m: &Message) -> bool {
+        if !matches!(self.command.as_str(), "test" | "coverage") || m.kind != "STDOUT" {
+            return false;
+        }
+        if self.swallow_stdout_line {
+            self.swallow_stdout_line = !m.text.contains('\n');
+            return true;
+        }
+        let t = m.text.trim_start();
+        if (t.starts_with("Executed ") && t.contains(" out of ")) || t.starts_with("There were tests whose specified size is too big") {
+            self.swallow_stdout_line = !t.contains('\n');
+            return true;
+        }
+        false
     }
 
     fn erase(&mut self, out: &mut Vec<u8>) {
@@ -152,6 +202,9 @@ impl Terminal {
 
     /// Formats a message the way Bazel's UiEventHandler prints it.
     pub fn message(&mut self, m: &Message) {
+        if self.is_bazel_test_stats(m) {
+            return;
+        }
         match m.kind.as_str() {
             "START" | "FINISH" | "PASS" | "TIMEOUT" | "DEPCHECKER" | "PROGRESS" => return,
             "STDOUT" => {
@@ -200,9 +253,10 @@ impl Terminal {
         }
     }
 
-    /// Message bytes go to the screen now (inline mode) or into the capture (dashboard mode).
+    /// Message bytes go to the screen now (inline mode) or into the capture (dashboard mode, and
+    /// interactive help, where Bazel's usage text only comes out if the finder is quit).
     fn emit(&mut self, to_stdout: bool, bytes: Vec<u8>) {
-        if self.on_alt_screen {
+        if self.on_alt_screen || (self.help_mode && !self.help_done) {
             self.capture(to_stdout, &bytes);
         } else {
             self.record_log(&bytes);
@@ -218,7 +272,11 @@ impl Terminal {
     /// build is running on a terminal of known size, drives the full-screen dashboard.
     pub fn poll(&mut self, state: &State, now_ms: i64) -> Output {
         self.sync_size();
-        self.handle_keys();
+        let keys = self.read_keys();
+        if self.help_mode {
+            return self.poll_help(state, keys);
+        }
+        self.handle_keys(keys);
         if state.command_builds() && !state.finished {
             if let Some((cols, rows)) = self.dashboard_possible() {
                 return self.poll_dashboard(state, now_ms, cols, rows);
@@ -253,7 +311,7 @@ impl Terminal {
             self.erase(&mut out.stderr);
             out.stderr.append(&mut self.pending.stderr);
             out.stdout.append(&mut self.pending.stdout);
-            out.stderr.extend_from_slice(b"\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[H\x1b[2J");
+            out.stderr.extend_from_slice(ENTER_ALT);
             self.on_alt_screen = true;
             self.last_frame.clear();
         }
@@ -272,12 +330,59 @@ impl Terminal {
         out
     }
 
+    /// The help finder: starts once the index has arrived, then follows the keys until an entry
+    /// is chosen (printed to stdout) or the user quits (Bazel's usage text is released).
+    fn poll_help(&mut self, state: &State, keys: Vec<Key>) -> Output {
+        let mut out = Output::default();
+        if self.help_done {
+            return out;
+        }
+        let Some((cols, rows)) = self.current_size() else { return out };
+        if self.finder.is_none() {
+            if state.help.is_empty() {
+                return out;
+            }
+            out.stderr.extend_from_slice(ENTER_ALT);
+            self.on_alt_screen = true;
+            self.last_frame.clear();
+            self.finder = Some(Finder::new(&state.help, cols, rows, self.color));
+        }
+        let color = self.color;
+        let f = self.finder.as_mut().expect("finder");
+        f.resize(cols, rows);
+        for k in keys {
+            f.key(k);
+        }
+        if f.finished() {
+            let chosen = f.result().map(|it| help::print(it, color, cols as usize));
+            if chosen.is_some() {
+                self.captured.clear();
+            }
+            self.help_done = true;
+            self.leave_alt_screen(&mut out);
+            if let Some(text) = chosen {
+                out.stdout.extend_from_slice(text.as_bytes());
+            }
+            return out;
+        }
+        let frame = f.render();
+        let full = self.last_frame.len() != frame.len();
+        for (y, line) in frame.iter().enumerate() {
+            if full || self.last_frame.get(y) != Some(line) {
+                out.stderr.extend_from_slice(format!("\x1b[{};1H", y + 1).as_bytes());
+                out.stderr.extend_from_slice(line.as_bytes());
+            }
+        }
+        self.last_frame = frame;
+        out
+    }
+
     /// Back to the normal screen, with everything that was printed meanwhile replayed in order.
     fn leave_alt_screen(&mut self, out: &mut Output) {
         if !self.on_alt_screen {
             return;
         }
-        out.stderr.extend_from_slice(b"\x1b[?7h\x1b[?1049l\x1b[?25h");
+        out.stderr.extend_from_slice(LEAVE_ALT);
         for (to_stdout, bytes) in self.captured.drain(..) {
             if to_stdout { out.stdout.extend_from_slice(&bytes) } else { out.stderr.extend_from_slice(&bytes) }
         }
@@ -292,15 +397,23 @@ impl Terminal {
     /// and the summary.
     pub fn finish(&mut self, state: &State, now_ms: i64) -> Output {
         let mut out = Output::default();
+        if self.help_mode && !self.help_done {
+            // Interrupted, or the index never arrived: hand out Bazel's own text.
+            self.help_done = true;
+        }
         self.leave_alt_screen(&mut out);
+        if self.help_mode {
+            for (to_stdout, bytes) in self.captured.drain(..) {
+                if to_stdout { out.stdout.extend_from_slice(&bytes) } else { out.stderr.extend_from_slice(&bytes) }
+            }
+        }
         self.erase(&mut out.stderr);
         out.stderr.append(&mut self.pending.stderr);
         out.stdout.append(&mut self.pending.stdout);
-        let summary = self.renderer.summary(state, now_ms);
-        if !summary.is_empty() {
-            out.stderr.extend_from_slice(summary.as_bytes());
-            out.stderr.push(b'\n');
-        }
+        let width = self.current_size().map(|(c, _)| c as usize).unwrap_or_else(|| self.renderer.width());
+        let rep = summary::report(state, now_ms, self.color, width);
+        out.stderr.extend_from_slice(rep.stderr.as_bytes());
+        out.stdout.extend_from_slice(rep.stdout.as_bytes());
         // Give the terminal back (termios) before Bazel's client runs anything else, e.g. `bazel run`.
         self.pty = None;
         out

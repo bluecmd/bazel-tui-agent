@@ -44,6 +44,9 @@ pub const TAG_COMMAND_FINISHED: u8 = 25;
 pub const TAG_HOOK_ERROR: u8 = 26;
 pub const TAG_OTHER: u8 = 27;
 pub const TAG_TERMINAL_SIZE: u8 = 28;
+pub const TAG_HELP_COMMAND: u8 = 29;
+pub const TAG_HELP_OPTION: u8 = 30;
+pub const TAG_ACTION_CACHED: u8 = 31;
 
 struct Reader<'a> {
     buf: &'a [u8],
@@ -127,6 +130,9 @@ pub fn decode(buf: &[u8]) -> Option<Stamped> {
             bazel_version: r.str()?,
             agent_jar: r.str()?,
             agent_jar_mtime_ms: r.i64()?,
+            exec_root: r.str()?,
+            show_result: r.i64()?,
+            test_summary: r.str()?,
         },
         TAG_BUILD_STARTED => Event::BuildStarted { targets: r.list()?, build_id: r.str()? },
         TAG_PHASE => Event::Phase {
@@ -159,7 +165,7 @@ pub fn decode(buf: &[u8]) -> Option<Stamped> {
             wall_ms: r.i64()?,
         },
         TAG_TARGET_ANALYZED => Event::TargetAnalyzed { label: r.str()? },
-        TAG_TARGET_COMPLETE => Event::TargetComplete { label: r.str()?, failed: r.bool()? },
+        TAG_TARGET_COMPLETE => Event::TargetComplete { label: r.str()?, failed: r.bool()?, outputs: r.list()? },
         TAG_TEST_ANALYZED => Event::TestAnalyzed { label: r.str()? },
         TAG_TEST_FILTERING_COMPLETE => Event::TestFilteringComplete { targets: r.u64()?, tests: r.u64()?, skipped: r.u64()? },
         TAG_TEST_SUMMARY => Event::TestSummary {
@@ -171,6 +177,11 @@ pub fn decode(buf: &[u8]) -> Option<Stamped> {
             failed_cases: r.u64()?,
             total_cases: r.u64()?,
             time_ms: r.u64()?,
+            failed_logs: r.list()?,
+            passed_logs: r.list()?,
+            failed_case_names: r.list()?,
+            attempts: r.u64()?,
+            wrong_size: r.bool()?,
         },
         TAG_BUILD_COMPLETE => Event::BuildComplete { success: r.bool()?, catastrophe: r.bool()?, exit_code: r.i64()?, stop_ms: r.i64()? },
         TAG_NO_BUILD => Event::NoBuild,
@@ -181,6 +192,24 @@ pub fn decode(buf: &[u8]) -> Option<Stamped> {
         TAG_HOOK_ERROR => Event::HookError { event_class: r.str()?, error: r.str()?, disabled: r.str()? },
         TAG_OTHER => Event::Other { class: r.str()? },
         TAG_TERMINAL_SIZE => Event::TerminalSize { columns: r.u64()?, rows: r.u64()? },
+        TAG_HELP_COMMAND => Event::HelpCommand { name: r.str()?, summary: r.str()?, help: r.str()? },
+        TAG_HELP_OPTION => Event::HelpOption {
+            name: r.str()?,
+            abbrev: r.str()?,
+            value_type: r.str()?,
+            default: r.str()?,
+            category: r.str()?,
+            help: r.str()?,
+            commands: r.list()?,
+            effect_tags: r.list()?,
+            metadata_tags: r.list()?,
+            expansion: r.list()?,
+            deprecation: r.str()?,
+            old_name: r.str()?,
+            multiple: r.bool()?,
+            boolean_syntax: r.bool()?,
+        },
+        TAG_ACTION_CACHED => Event::ActionCached { action: r.action()? },
         _ => return None,
     };
     Some(Stamped { t_ms, event })

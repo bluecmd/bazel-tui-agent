@@ -13,6 +13,105 @@ use std::os::unix::io::RawFd;
 pub struct Pty {
     input: Option<(RawFd, libc::termios)>,
     size_fd: RawFd,
+    stdout_tty: bool,
+}
+
+/// A decoded keystroke from the client's terminal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Key {
+    Char(char),
+    Up,
+    Down,
+    Left,
+    Right,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+    Enter,
+    Backspace,
+    Delete,
+    Esc,
+    Tab,
+    /// Control-letter, as the lower-case letter ('c' for Ctrl-C).
+    Ctrl(char),
+}
+
+/// Turns raw tty bytes into keys: CSI/SS3 sequences for cursor and editing keys, UTF-8 text,
+/// a lone ESC as `Esc`. Incomplete escape sequences at the end of the buffer are dropped.
+pub fn decode_keys(bytes: &[u8]) -> Vec<Key> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == 0x1b {
+            if bytes.get(i + 1) == Some(&b'[') {
+                let mut j = i + 2;
+                while j < bytes.len() && !(0x40..=0x7e).contains(&bytes[j]) {
+                    j += 1;
+                }
+                if j >= bytes.len() {
+                    break;
+                }
+                let params = &bytes[i + 2..j];
+                let key = match bytes[j] {
+                    b'A' => Some(Key::Up),
+                    b'B' => Some(Key::Down),
+                    b'C' => Some(Key::Right),
+                    b'D' => Some(Key::Left),
+                    b'H' => Some(Key::Home),
+                    b'F' => Some(Key::End),
+                    b'~' => match params {
+                        b"1" | b"7" => Some(Key::Home),
+                        b"4" | b"8" => Some(Key::End),
+                        b"3" => Some(Key::Delete),
+                        b"5" => Some(Key::PageUp),
+                        b"6" => Some(Key::PageDown),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                out.extend(key);
+                i = j + 1;
+                continue;
+            }
+            if bytes.get(i + 1) == Some(&b'O') {
+                let key = match bytes.get(i + 2) {
+                    Some(b'A') => Some(Key::Up),
+                    Some(b'B') => Some(Key::Down),
+                    Some(b'C') => Some(Key::Right),
+                    Some(b'D') => Some(Key::Left),
+                    Some(b'H') => Some(Key::Home),
+                    Some(b'F') => Some(Key::End),
+                    _ => None,
+                };
+                out.extend(key);
+                i += 3;
+                continue;
+            }
+            out.push(Key::Esc);
+            i += 1;
+            continue;
+        }
+        match b {
+            b'\r' | b'\n' => out.push(Key::Enter),
+            0x7f | 0x08 => out.push(Key::Backspace),
+            b'\t' => out.push(Key::Tab),
+            0x01..=0x1a => out.push(Key::Ctrl((b'a' + b - 1) as char)),
+            _ if b < 0x80 => out.push(Key::Char(b as char)),
+            _ => {
+                let len = if b >= 0xf0 { 4 } else if b >= 0xe0 { 3 } else if b >= 0xc0 { 2 } else { 1 };
+                let end = (i + len).min(bytes.len());
+                if let Ok(s) = std::str::from_utf8(&bytes[i..end]) {
+                    out.extend(s.chars().map(Key::Char));
+                }
+                i = end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
 }
 
 impl Pty {
@@ -44,7 +143,14 @@ impl Pty {
             }
             Some((fd, saved))
         });
-        Some(Pty { input, size_fd })
+        let stdout_tty = tty(1).is_some();
+        Some(Pty { input, size_fd, stdout_tty })
+    }
+
+    /// Keys can be read and both output streams go to the terminal: a full-screen interaction
+    /// (the help finder) is possible without breaking a pipeline.
+    pub fn interactive(&self) -> bool {
+        self.input.is_some() && self.stdout_tty
     }
 
     /// (columns, rows) of the client's terminal right now.
@@ -57,13 +163,13 @@ impl Pty {
         Some((ws.ws_col, ws.ws_row))
     }
 
-    /// Whatever the user typed since the last call (raw bytes; empty when nothing or no input tty).
-    pub fn read_keys(&self) -> Vec<u8> {
+    /// Whatever the user typed since the last call (empty when nothing or no input tty).
+    pub fn read_keys(&self) -> Vec<Key> {
         let Some((fd, _)) = self.input else { return Vec::new() };
-        let mut buf = [0u8; 64];
+        let mut buf = [0u8; 256];
         // SAFETY: non-blocking read into a stack buffer.
         let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
-        if n <= 0 { Vec::new() } else { buf[..n as usize].to_vec() }
+        if n <= 0 { Vec::new() } else { decode_keys(&buf[..n as usize]) }
     }
 
 }

@@ -30,6 +30,13 @@ Changing the startup option restarts the Bazel server once. Keys while a
 build runs: `t` switches the tree order, `l` enlarges the log, Ctrl-C
 cancels. `BAZEL_HOOK_UI=0` in the environment turns the UI off.
 
+When the command ends you get a report instead of Bazel's result block: for
+`build`, every target's output files with size and whether this run built
+them; for `test`, an overview with failures first, failed cases and
+`bazel-testlogs` paths (depth follows `--test_summary`). `bazel help` opens
+an interactive, fuzzy-matching finder over all commands and options (Enter
+prints the entry, Esc prints the usual usage text).
+
 Linux x86_64 only for the UI. One jar runs on Bazel 6.6 through 9.3.
 
 ## Build from source

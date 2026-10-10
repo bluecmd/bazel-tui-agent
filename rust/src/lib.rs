@@ -8,9 +8,11 @@
 
 mod dashboard;
 mod events;
+mod help;
 mod pty;
 mod render;
 mod state;
+mod summary;
 mod terminal;
 mod text;
 mod trace;
@@ -70,7 +72,9 @@ pub extern "system" fn Java_bazelhook_Native_event(env: JNIEnv, _class: JClass, 
         t.write(&ev);
     }
     e.state.apply(&ev);
-    match (e.terminal.as_mut(), &ev.event) {
+    let Engine { state, terminal, .. } = &mut *e;
+    match (terminal.as_mut(), &ev.event) {
+        (Some(term), events::Event::CommandStarted { .. }) => term.command_started(state),
         (Some(term), events::Event::Message(msg)) => term.message(msg),
         (Some(term), events::Event::TerminalSize { columns, rows }) => term.reported_size(*columns as u16, *rows as u16),
         _ => {}
@@ -117,6 +121,16 @@ pub extern "system" fn Java_bazelhook_Native_finish(env: JNIEnv, _class: JClass,
         Err(_) => Output::default(),
     };
     bytes(&env, &out.framed())
+}
+
+/// True while an interactive screen (the help finder) is up and needs polling.
+#[no_mangle]
+pub extern "system" fn Java_bazelhook_Native_busy(_env: JNIEnv, _class: JClass, handle: jlong) -> jboolean {
+    let Some(m) = engine(handle) else { return 0 };
+    match m.lock() {
+        Ok(e) => e.terminal.as_ref().map_or(false, |t| t.busy()) as jboolean,
+        Err(_) => 0,
+    }
 }
 
 #[no_mangle]

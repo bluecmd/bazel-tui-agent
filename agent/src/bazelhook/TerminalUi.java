@@ -69,6 +69,23 @@ final class TerminalUi {
     }
   }
 
+  /**
+   * Blocks while the engine runs an interactive screen (the {@code help} finder), polling it
+   * fast enough for keystrokes. Returns at once when nothing interactive is going on.
+   */
+  void interact() {
+    try {
+      while (!closed && Native.busy(handle) && !Thread.currentThread().isInterrupted()) {
+        flush();
+        Thread.sleep(20);
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    } catch (Throwable ignored) {
+      // the command result is unaffected
+    }
+  }
+
   synchronized void close() {
     if (closed) {
       return;
