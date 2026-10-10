@@ -23,6 +23,19 @@ public final class Agent {
   private static volatile long clientPid;
   private static volatile Object terminalSizeMonitor;
   private static volatile List<String> extraOptions = List.of();
+  /** Set by the advice on the server's cancel RPC; consumed by the running command's forwarder. */
+  private static volatile boolean cancelRequested;
+
+  public static boolean takeCancel() {
+    boolean c = cancelRequested;
+    cancelRequested = false;
+    return c;
+  }
+
+  /** Called from the inlined advice; must stay public. */
+  public static void noteCancel() {
+    cancelRequested = true;
+  }
 
   private Agent() {}
 
@@ -137,6 +150,12 @@ public final class Agent {
         .transform(
             (builder, typeDescription, classLoader, module, protectionDomain) ->
                 builder.visit(Advice.to(ExecAdvice.class).on(ElementMatchers.named("exec"))))
+        // The client's Ctrl-C is a cancel RPC; note it the moment it arrives (the interrupt flag
+        // on the command thread is consumed by whatever is waiting and is not reliably observable).
+        .type(ElementMatchers.named("com.google.devtools.build.lib.server.GrpcServerImpl"))
+        .transform(
+            (builder, typeDescription, classLoader, module, protectionDomain) ->
+                builder.visit(Advice.to(CancelAdvice.class).on(ElementMatchers.named("cancel"))))
         .type(ElementMatchers.named("com.google.devtools.build.lib.runtime.BlazeOptionHandler"))
         .transform(
             (builder, typeDescription, classLoader, module, protectionDomain) ->
@@ -167,6 +186,17 @@ public final class Agent {
     @SuppressWarnings("unused")
     public static void enter(@Advice.AllArguments Object[] args) {
       Agent.noteClientDescription(args);
+    }
+  }
+
+  /** Advice inlined at the start of {@code GrpcServerImpl.cancel(request, observer)}. */
+  public static final class CancelAdvice {
+    private CancelAdvice() {}
+
+    @Advice.OnMethodEnter
+    @SuppressWarnings("unused")
+    public static void enter() {
+      Agent.noteCancel();
     }
   }
 

@@ -48,6 +48,7 @@ pub const TAG_HELP_COMMAND: u8 = 29;
 pub const TAG_HELP_OPTION: u8 = 30;
 pub const TAG_ACTION_CACHED: u8 = 31;
 pub const TAG_ACTION_RESULT: u8 = 32;
+pub const TAG_CANCELLED: u8 = 33;
 
 struct Reader<'a> {
     buf: &'a [u8],
@@ -202,6 +203,7 @@ pub fn decode(buf: &[u8]) -> Option<Stamped> {
             }
             Event::ActionResult { action, spawns }
         }
+        TAG_CANCELLED => Event::Cancelled,
         TAG_HELP_COMMAND => Event::HelpCommand { name: r.str()?, summary: r.str()?, help: r.str()? },
         TAG_HELP_OPTION => Event::HelpOption {
             name: r.str()?,

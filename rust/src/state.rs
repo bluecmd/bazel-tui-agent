@@ -103,6 +103,8 @@ pub struct State {
     pub command: Option<String>,
     pub args: Vec<String>,
     pub workspace: String,
+    pub agent_jar: String,
+    pub agent_jar_mtime_ms: i64,
     pub exec_root: String,
     pub show_result: i64,
     pub test_summary: String,
@@ -132,6 +134,8 @@ pub struct State {
     pub warnings: u64,
     pub errors: u64,
     pub build_success: Option<bool>,
+    /// Ctrl-C was pressed; set until the command ends.
+    pub cancelled_ms: Option<i64>,
     pub finished: bool,
     pub exec_t0_ms: Option<i64>,
     pub exec_done0: u64,
@@ -255,10 +259,12 @@ impl State {
     pub fn apply(&mut self, ev: &Stamped) {
         let now = ev.t_ms;
         match &ev.event {
-            Event::CommandStarted { command, args, workspace, exec_root, show_result, test_summary, .. } => {
+            Event::CommandStarted { command, args, workspace, exec_root, show_result, test_summary, agent_jar, agent_jar_mtime_ms, .. } => {
                 self.command = Some(command.clone());
                 self.args = args.clone();
                 self.workspace = workspace.clone();
+                self.agent_jar = agent_jar.clone();
+                self.agent_jar_mtime_ms = *agent_jar_mtime_ms;
                 self.exec_root = exec_root.clone();
                 self.show_result = *show_result;
                 self.test_summary = test_summary.clone();
@@ -392,9 +398,19 @@ impl State {
                 }))
             }
             Event::ActionCached { .. } => self.count_source(Source::ActionCache),
+            Event::Cancelled => {
+                if self.cancelled_ms.is_none() {
+                    self.cancelled_ms = Some(now);
+                }
+            }
             Event::Message(m) => match m.kind.as_str() {
                 "WARNING" => self.warnings += 1,
-                "ERROR" | "FATAL" => self.errors += 1,
+                "ERROR" | "FATAL" => {
+                    self.errors += 1;
+                    if m.text.trim() == "build interrupted" && self.cancelled_ms.is_none() {
+                        self.cancelled_ms = Some(now);
+                    }
+                }
                 "PROGRESS" => self.activity = m.text.trim().to_string(),
                 _ => {}
             },
@@ -490,6 +506,25 @@ impl State {
         let mut v: Vec<&Action> = self.actions.values().collect();
         v.sort_by(|a, b| a.state.cmp(&b.state).then(a.t_ms.cmp(&b.t_ms)));
         v
+    }
+
+    pub fn cancelling(&self) -> bool {
+        self.cancelled_ms.is_some() && !self.finished && self.build_success.is_none()
+    }
+
+    /// The action everything is waiting on: when at most two actions run and more are queued
+    /// behind them, the longest-running one (with its age in ms).
+    pub fn bottleneck(&self, now: i64) -> Option<(&Action, i64)> {
+        let running: Vec<&Action> = self.actions.values().filter(|a| a.state == ActState::Run).collect();
+        if running.is_empty() || running.len() > 2 {
+            return None;
+        }
+        let left = self.exec_counts().map(|(d, t)| t.saturating_sub(d)).unwrap_or(0);
+        if left <= running.len() as u64 {
+            return None;
+        }
+        let a = running.iter().min_by_key(|a| a.t_ms)?;
+        Some((a, now - a.t_ms))
     }
 
     pub fn running_count(&self) -> u64 {

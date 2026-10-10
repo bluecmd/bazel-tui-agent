@@ -26,11 +26,18 @@ pub struct Dashboard {
     term: Terminal<TestBackend>,
 }
 
+/// Border colour for every panel: the usual blue-grey, or orange while a cancel is in progress.
+static ABORTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn border() -> (u8, u8, u8) {
+    if ABORTING.load(std::sync::atomic::Ordering::Relaxed) { ABORT } else { BORDER }
+}
+
 fn panel(title: &str, right: &str) -> Block<'static> {
     let mut b = Block::new()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(st(BORDER))
+        .border_style(st(border()))
         .title_top(Line::from(Span::styled(format!(" {} ", title), bold(TITLE))));
     if !right.is_empty() {
         b = b.title_top(Line::from(Span::styled(format!(" {} ", right), st(MUTED))).right_aligned());
@@ -94,9 +101,13 @@ impl Dashboard {
 
         // ---- header content
         let targets: Vec<&str> = s.args.iter().map(|x| x.as_str()).take(4).collect();
+        ABORTING.store(s.cancelling(), std::sync::atomic::Ordering::Relaxed);
+        let bottleneck = s.bottleneck(now);
         let state_span = match s.build_success {
             Some(true) => Span::styled("✔ success", bold(OK)),
             Some(false) => Span::styled("✘ failed", bold(BAD)),
+            None if s.cancelling() => Span::styled(format!("{} ABORTING", spin), bold(ABORT)),
+            None if bottleneck.is_some() => Span::styled(format!("{} waiting on {} action{}", spin, s.running_count(), if s.running_count() == 1 { "" } else { "s" }), bold(WARN)),
             None => Span::styled(format!("{} {}", spin, s.phase), bold(ACCENT)),
         };
         let line1 = Line::from(vec![
@@ -108,7 +119,26 @@ impl Dashboard {
         ]);
         let counts = s.exec_counts();
         let mut line2: Vec<Span> = Vec::new();
-        if let Some((done, total)) = counts {
+        if s.cancelling() {
+            let secs = (now - s.cancelled_ms.unwrap_or(now)) / 1000;
+            line2.push(Span::styled("Ctrl-C received ", bold(ABORT)));
+            line2.push(Span::styled(
+                format!("· stopping {} running action{} and unwinding, {}s so far · a third Ctrl-C kills the server (slow next start)", s.running_count(), if s.running_count() == 1 { "" } else { "s" }, secs),
+                st(ABORT),
+            ));
+        } else if let Some((a, age)) = bottleneck {
+            let (done, total) = counts.unwrap_or((0, 0));
+            line2.push(Span::styled("waiting on ", st(WARN)));
+            line2.push(Span::styled(a.mnemonic.clone(), bold(mnemonic_rgb(&a.mnemonic))));
+            line2.push(Span::raw(format!(" {} ", short_label(&a.label, 50))));
+            line2.push(Span::styled(fmt_duration(age as f64 / 1000.0), bold(WARN)));
+            if let Some(p) = &a.progress {
+                line2.push(Span::styled(format!("  {}", p), dim()));
+            } else if !a.desc.is_empty() {
+                line2.push(Span::styled(format!("  {}", a.desc.chars().take(60).collect::<String>()), dim()));
+            }
+            line2.push(Span::styled(format!("  · {} of {} left behind it", with_commas(total.saturating_sub(done)), with_commas(total)), st(MUTED)));
+        } else if let Some((done, total)) = counts {
             let frac = if total > 0 { done as f64 / total as f64 } else { 0.0 };
             let barw = (self.cols as usize).saturating_sub(self.cols as usize / 4 + 44).clamp(10, 80);
             line2.extend(bar_spans(frac, barw, HEAT));
@@ -271,7 +301,7 @@ impl Dashboard {
                 // header + server
                 let server_w = (area.width / 4).clamp(30, 40);
                 let hs = Layout::horizontal([Constraint::Fill(1), Constraint::Length(server_w)]).split(rows_c[0]);
-                let hb = panel("build", "");
+                let hb = panel(if s.cancelling() { "aborting" } else { "build" }, "");
                 let hinner = hb.inner(hs[0]);
                 f.render_widget(hb, hs[0]);
                 let hl = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Length(1)]).split(hinner);
@@ -665,7 +695,7 @@ mod tests {
             s.apply(&Stamped { t_ms: t, event: ev });
             s.sample(t);
         };
-        push(&mut s, Event::CommandStarted { command: "build".into(), command_id: String::new(), workspace: String::new(), cwd: String::new(), args: vec!["//...".into()], start_ms: 1_000_000, bazel_version: String::new(), agent_jar: String::new(), agent_jar_mtime_ms: 0 });
+        push(&mut s, Event::CommandStarted { command: "build".into(), command_id: String::new(), workspace: String::new(), cwd: String::new(), args: vec!["//...".into()], start_ms: 1_000_000, bazel_version: String::new(), agent_jar: String::new(), agent_jar_mtime_ms: 0, exec_root: String::new(), show_result: 1, test_summary: "short".into() });
         push(&mut s, Event::BuildStarted { targets: vec![], build_id: String::new() });
         for i in 0..40 {
             let ev = match i % 8 {
@@ -678,6 +708,30 @@ mod tests {
             push(&mut s, ev);
         }
         s
+    }
+
+    #[test]
+    fn waiting_and_aborting_states_show_in_both_renderers() {
+        let mut s = synthetic();
+        let t = 1_100_000i64;
+        let slow = ActionRef { id: "slow".into(), mnemonic: "Rustc".into(), label: "//crate:lib".into(), description: "Compiling lib".into(), ..Default::default() };
+        s.apply(&Stamped { t_ms: t, event: Event::Phase { phase: crate::events::Phase::Execution } });
+        s.apply(&Stamped { t_ms: t, event: Event::ActionRunning { action: slow, strategy: "linux-sandbox".into() } });
+        s.apply(&Stamped { t_ms: t, event: Event::Progress { loading: String::new(), loading_detail: String::new(), analysis: String::new(), execution: "[40 / 70]".into() } });
+        let now = t + 8_000;
+        assert!(s.bottleneck(now).is_some());
+        let mut d = Dashboard::new(120, 30, false);
+        let text = d.render(&s, &[], now).join("\n");
+        assert!(text.contains("waiting on 1 action"), "{}", text);
+        assert!(text.contains("Rustc"), "{}", text);
+        let mut r = crate::render::Renderer::new(120, false, 12);
+        assert!(r.render(&s, now).contains("waiting on"));
+
+        s.apply(&Stamped { t_ms: now, event: Event::Cancelled });
+        assert!(s.cancelling());
+        let text = d.render(&s, &[], now + 1_000).join("\n");
+        assert!(text.contains("ABORTING") && text.contains("Ctrl-C received") && text.contains("aborting"), "{}", text);
+        assert!(r.render(&s, now + 1_000).contains("ABORTING"));
     }
 
     #[test]

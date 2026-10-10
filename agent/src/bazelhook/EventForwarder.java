@@ -64,6 +64,9 @@ final class EventForwarder implements EventHandler {
   private volatile Object executionProgress;
   private volatile String lastProgress = "";
   private int pollTick;
+  /** The thread running the command; Ctrl-C in the client interrupts it. */
+  private volatile Thread commandThread;
+  private boolean cancelSent;
 
   EventForwarder(long handle, TerminalUi ui, boolean allEvents) {
     this.handle = handle;
@@ -91,6 +94,8 @@ final class EventForwarder implements EventHandler {
             .str(execRoot(env))
             .i64(showResult(env))
             .str(testSummary(env)));
+    commandThread = Thread.currentThread();
+    Agent.takeCancel(); // a cancel left over from an earlier command is not ours
     env.getEventBus().register(this);
     env.getReporter().addHandler(this);
     poller.scheduleAtFixedRate(this::pollProgress, 100, 100, TimeUnit.MILLISECONDS);
@@ -428,6 +433,16 @@ final class EventForwarder implements EventHandler {
   /** Samples every live phase counter (Bazel 9 overlaps analysis and execution). */
   private void pollProgress() {
     try {
+      // The client's Ctrl-C arrives as a cancel RPC that interrupts the command thread; Bazel
+      // then spends a while stopping actions. Tell the engine so it can say so.
+      Thread ct = commandThread;
+      if (!cancelSent && (Agent.takeCancel() || (ct != null && ct.isInterrupted()))) {
+        cancelSent = true;
+        send(new Packet(Packet.CANCELLED));
+        if (ui != null) {
+          ui.flush();
+        }
+      }
       if (pollTick++ % 10 == 0) {
         Runtime rt = Runtime.getRuntime();
         java.lang.management.OperatingSystemMXBean os = java.lang.management.ManagementFactory.getOperatingSystemMXBean();

@@ -119,6 +119,8 @@ pub enum Event {
     /// results; this is where remote and disk cache hits are visible on releases that post no
     /// `Spawn` for them.
     ActionResult { action: ActionRef, spawns: Vec<SpawnBrief> },
+    /// The client asked to cancel (Ctrl-C): Bazel is interrupting and will finish with an error.
+    Cancelled,
     /// One Bazel command (or help topic) for the interactive `help` finder.
     HelpCommand { name: String, summary: String, help: String },
     /// One documented option for the interactive `help` finder.

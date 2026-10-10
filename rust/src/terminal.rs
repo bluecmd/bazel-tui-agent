@@ -414,6 +414,9 @@ impl Terminal {
         let rep = summary::report(state, now_ms, self.color, width);
         out.stderr.extend_from_slice(rep.stderr.as_bytes());
         out.stdout.extend_from_slice(rep.stdout.as_bytes());
+        if let Some(n) = summary::stale_jar_notice(state, self.color) {
+            out.stderr.extend_from_slice(n.as_bytes());
+        }
         // Give the terminal back (termios) before Bazel's client runs anything else, e.g. `bazel run`.
         self.pty = None;
         out

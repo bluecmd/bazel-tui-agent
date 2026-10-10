@@ -78,6 +78,20 @@ pub fn report(s: &State, now: i64, color: bool, width: usize) -> Report {
     rep
 }
 
+/// The agent jar on disk is newer than the one this server loaded: the user rebuilt it and is
+/// still talking to the old code (the classic "why did nothing change" trap).
+pub fn stale_jar_notice(s: &State, color: bool) -> Option<String> {
+    if s.agent_jar.is_empty() || s.agent_jar_mtime_ms <= 0 {
+        return None;
+    }
+    let mtime = std::fs::metadata(&s.agent_jar).ok()?.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_millis() as i64;
+    if (mtime - s.agent_jar_mtime_ms).abs() < 1500 {
+        return None;
+    }
+    let sty = Sty { color };
+    Some(format!("{} {}\n", sty.rgb_bold("bazel-hook:", WARN), sty.rgb("the agent jar changed on disk after this server started; run `bazel shutdown` to load the new one", WARN)))
+}
+
 /// Bazel's own last line, which its (silenced) UI handler would have printed.
 fn completion_line(s: &State, sty: &Sty, success: bool) -> String {
     if success {
@@ -116,7 +130,17 @@ fn verdict_line(s: &State, now: i64, sty: &Sty, success: bool) -> String {
     }
     let tests_failed = s.tests.values().any(|t| rank(t) == 0);
     let mark = if success && !tests_failed { sty.rgb_bold("✔", OK) } else { sty.rgb_bold("✘", BAD) };
-    format!("{} {} {}  {}", mark, sty.bold(s.command.as_deref().unwrap_or("build")), sty.bold(&fmt_duration(total)), sty.dim(&parts.join(" · ")))
+    let command = sty.bold(s.command.as_deref().unwrap_or("build"));
+    match s.cancelled_ms {
+        Some(t) => format!(
+            "{} {} {}  {}",
+            mark,
+            command,
+            sty.rgb_bold(&format!("cancelled by Ctrl-C after {}, stopped in {}", fmt_duration((t - s.t0_ms) as f64 / 1000.0), fmt_duration((now - t).max(0) as f64 / 1000.0)), ABORT),
+            sty.dim(&parts.join(" · "))
+        ),
+        None => format!("{} {} {}  {}", mark, command, sty.bold(&fmt_duration(total)), sty.dim(&parts.join(" · "))),
+    }
 }
 
 /// Where the actions came from: "actions 455 · 449 action cache · 3 remote cache · 2 local exec".

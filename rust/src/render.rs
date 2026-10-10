@@ -115,8 +115,9 @@ impl Renderer {
         // ---- header (goes on the top border as titles)
         let spin = SPINNER[self.tick % SPINNER.len()];
         let targets: Vec<&str> = s.args.iter().map(|x| x.as_str()).take(3).collect();
+        let aborting = s.cancelling();
         let mut title = vec![
-            Span::styled(format!(" {} ", spin), st(ACCENT)),
+            Span::styled(format!(" {} ", spin), st(if aborting { ABORT } else { ACCENT })),
             Span::styled(s.command.clone().unwrap_or_else(|| "bazel".into()), Style::new().add_modifier(Modifier::BOLD)),
             Span::styled(format!(" {}{} ", targets.join(" "), if s.args.len() > 3 { " …" } else { "" }), st(TITLE)),
         ];
@@ -156,7 +157,18 @@ impl Renderer {
         let counts = s.exec_counts();
         let mut progress: Vec<Span> = Vec::new();
         let mut progress_right: Vec<Span> = Vec::new();
-        if let Some((done, total)) = counts {
+        if aborting {
+            let secs = (now - s.cancelled_ms.unwrap_or(now)) / 1000;
+            progress.push(Span::styled("ABORTING ", bold(ABORT)));
+            progress.push(Span::styled(format!("Ctrl-C received · stopping {} running action(s), {}s so far · a third Ctrl-C kills the server", s.running_count(), secs), st(ABORT)));
+        } else if let Some((a, age)) = s.bottleneck(now) {
+            let (done, total) = counts.unwrap_or((0, 0));
+            progress.push(Span::styled("waiting on ", st(WARN)));
+            progress.push(Span::styled(a.mnemonic.clone(), bold(mnemonic_rgb(&a.mnemonic))));
+            progress.push(Span::raw(format!(" {} ", short_label(&a.label, 40))));
+            progress.push(Span::styled(fmt_duration(age as f64 / 1000.0), bold(WARN)));
+            progress_right.push(Span::styled(format!("{} of {} left", with_commas(total.saturating_sub(done)), with_commas(total)), st(MUTED)));
+        } else if let Some((done, total)) = counts {
             let frac = if total > 0 { done as f64 / total as f64 } else { 0.0 };
             let barw = width.saturating_sub(48).clamp(10, 40);
             progress.extend(self.bar(frac, barw));

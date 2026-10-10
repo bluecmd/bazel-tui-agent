@@ -31,6 +31,7 @@ pub const BORDER: (u8, u8, u8) = (90, 100, 130);
 pub const OK: (u8, u8, u8) = (90, 220, 120);
 pub const BAD: (u8, u8, u8) = (255, 90, 90);
 pub const WARN: (u8, u8, u8) = (250, 200, 60);
+pub const ABORT: (u8, u8, u8) = (255, 140, 40);
 pub const ACCENT: (u8, u8, u8) = (140, 170, 255);
 pub const TITLE: (u8, u8, u8) = (170, 190, 230);
 pub const MUTED: (u8, u8, u8) = (130, 140, 160);
