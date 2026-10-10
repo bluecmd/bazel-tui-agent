@@ -173,6 +173,7 @@ enum Kind {
 
 struct FileRow {
     path: String,
+    abs: PathBuf,
     size: u64,
     kind: Kind,
     /// Written during this command (as opposed to left from an earlier one).
@@ -182,15 +183,15 @@ struct FileRow {
 fn stat_row(paths: &Paths, exec_path: &str, t0_ms: i64) -> FileRow {
     let abs = paths.absolute(exec_path);
     let path = paths.pretty(exec_path);
-    let Ok(md) = std::fs::metadata(&abs) else { return FileRow { path, size: 0, kind: Kind::Missing, fresh: false } };
+    let Ok(md) = std::fs::metadata(&abs) else { return FileRow { path, abs, size: 0, kind: Kind::Missing, fresh: false } };
     let mtime_ms = |m: &std::fs::Metadata| m.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64).unwrap_or(0);
     if md.is_dir() {
         let (files, size, newest) = walk(&abs, 0, 0, 0, &mut 0);
-        FileRow { path, size, kind: Kind::Dir { files }, fresh: newest >= t0_ms - 2000 }
+        FileRow { path, abs, size, kind: Kind::Dir { files }, fresh: newest >= t0_ms - 2000 }
     } else {
         use std::os::unix::fs::PermissionsExt;
         let exec = md.permissions().mode() & 0o111 != 0;
-        FileRow { path, size: md.len(), kind: Kind::File { exec }, fresh: mtime_ms(&md) >= t0_ms - 2000 }
+        FileRow { path, abs, size: md.len(), kind: Kind::File { exec }, fresh: mtime_ms(&md) >= t0_ms - 2000 }
     }
 }
 
@@ -216,6 +217,46 @@ fn walk(dir: &Path, mut files: u64, mut size: u64, mut newest: i64, budget: &mut
         }
     }
     (files, size, newest)
+}
+
+/// The first level of a directory output as a tree: what a single-target build of a directory
+/// (a tree artifact, a packaged bundle) is usually run to see. Directories first, then files.
+fn dir_tree(sty: &Sty, dir: &Path, t0_ms: i64, width: usize) -> String {
+    const MAX: usize = 40;
+    let Ok(rd) = std::fs::read_dir(dir) else { return String::new() };
+    let mut entries: Vec<(bool, String, u64, u64, bool)> = Vec::new(); // is_dir, name, size, files, fresh
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Ok(md) = e.metadata() else { continue };
+        if md.is_dir() {
+            let (files, size, newest) = walk(&e.path(), 0, 0, 0, &mut 0);
+            entries.push((true, name, size, files, newest >= t0_ms - 2000));
+        } else {
+            let m = md.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64).unwrap_or(0);
+            entries.push((false, name, md.len(), 0, m >= t0_ms - 2000));
+        }
+    }
+    entries.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let shown = entries.len().min(MAX);
+    let namew = entries.iter().take(shown).map(|e| e.1.width() + if e.0 { 1 } else { 0 }).max().unwrap_or(0).min(width.saturating_sub(30));
+    let mut out = String::new();
+    for (i, (is_dir, name, size, files, fresh)) in entries.iter().take(shown).enumerate() {
+        let last = i + 1 == shown && entries.len() == shown;
+        let branch = if last { "└─" } else { "├─" };
+        let shown_name = if *is_dir { format!("{}/", name) } else { name.clone() };
+        let pad = " ".repeat(namew.saturating_sub(shown_name.width()));
+        let name_s = if *is_dir { sty.rgb(&shown_name, ACCENT) } else { shown_name.clone() };
+        let detail = if *is_dir {
+            format!("{:>9}   {}", fmt_size(*size), sty.dim(&format!("{} file{}", files, if *files == 1 { "" } else { "s" })))
+        } else {
+            format!("{:>9}   {}", fmt_size(*size), if *fresh { sty.rgb("●", OK) } else { sty.dim("○") })
+        };
+        out.push_str(&format!("       {} {}{}  {}\n", sty.dim(branch), name_s, pad, detail));
+    }
+    if entries.len() > shown {
+        out.push_str(&format!("       {} {}\n", sty.dim("└─"), sty.dim(&format!("… {} more entries", entries.len() - shown))));
+    }
+    out
 }
 
 pub fn fmt_size(bytes: u64) -> String {
@@ -290,6 +331,8 @@ fn artifacts(s: &State, sty: &Sty, width: usize) -> String {
     }
 
     let pathw = rows.iter().flat_map(|r| r.1.iter()).map(|f| f.path.width()).max().unwrap_or(0).min(width.saturating_sub(5 + 9 + 2 + 14));
+    // One target with one directory output: the user almost certainly wants to see what is in it.
+    let solo_dir = rows.len() == 1 && rows[0].1.len() == 1 && rows[0].2 == 0 && matches!(rows[0].1[0].kind, Kind::Dir { .. });
     let mut out = String::new();
     for (label, files, hidden, hidden_bytes) in &rows {
         if files.is_empty() && *hidden == 0 {
@@ -322,6 +365,9 @@ fn artifacts(s: &State, sty: &Sty, width: usize) -> String {
                 (_, false) => sty.dim("○ unchanged"),
             };
             out.push_str(&format!("     {}{}  {:>9}   {}\n", path, pad, size, status));
+            if solo_dir {
+                out.push_str(&dir_tree(sty, &f.abs, s.t0_ms, width));
+            }
         }
         if *hidden > 0 {
             out.push_str(&format!("     {}\n", sty.dim(&format!("… {} more files ({})", hidden, fmt_size(*hidden_bytes)))));
