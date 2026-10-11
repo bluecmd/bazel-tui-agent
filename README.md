@@ -7,6 +7,17 @@ graphs, running actions, build tree, mnemonics, log) on your terminal. When
 output is not a terminal, or on platforms without the native library, Bazel
 behaves exactly as without the agent.
 
+```sh
+curl -fsSL https://raw.githubusercontent.com/bluecmd/bazel-tui-agent/main/install.sh | bash
+```
+
+That is the whole install: the newest release lands in
+`~/.local/share/bazel-tui-agent/`, one `startup` line is appended to
+`~/.bazelrc`, and the next `bazel build` in a terminal shows the dashboard
+(with its version, `tui v0.3.1`, in the top-right corner). Run it again to
+update; `VERSION=v0.3.1`, `DIR` and `BAZELRC_FILE` override the defaults.
+Linux x86_64, any Bazel from 6.6 to 9.3.
+
 <img width="2880" height="1920" alt="image" src="https://github.com/user-attachments/assets/a9f6c598-47ba-4557-b18b-3ad5ede56267" />
 
 ## See it run
@@ -39,21 +50,9 @@ inside, and the cache panel shows where the actions came from.
 
 ## Enable
 
-Quick install:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/bluecmd/bazel-tui-agent/main/install.sh | bash
-```
-
-That downloads the newest release (pre-releases included) to
-`~/.local/share/bazel-tui-agent/bazel-tui-agent.jar` and appends the startup
-line below to `~/.bazelrc`. Run it again to update; `VERSION=v0.3` picks a
-release, `DIR` and `BAZELRC_FILE` change the locations. The installed version
-shows in the dashboard's top-right corner (`tui v0.3`).
-
-By hand instead: download `bazel-tui-agent.jar` from the
-[releases](../../releases) and add the startup option to your `~/.bazelrc`
-(or a workspace `.bazelrc`):
+Installed with the quick install at the top? Then this is already done. By
+hand: download `bazel-tui-agent.jar` from the [releases](../../releases) and
+add the startup option to your `~/.bazelrc` (or a workspace `.bazelrc`):
 
 ```
 startup --host_jvm_args=-javaagent:/absolute/path/to/bazel-tui-agent.jar
