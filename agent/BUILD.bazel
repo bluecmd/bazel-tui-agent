@@ -8,6 +8,15 @@ genrule(
     cmd = "cp $$(echo $(locations //rust:bazelhook_ui) | tr ' ' '\\n' | grep '\\.so$$') $@",
 )
 
+# The release the jar is built from, read by Agent.version() and shown in the UI: the label
+# from `bazel build --stamp --embed_label=v0.3` (how releases are built), "dev" otherwise.
+genrule(
+    name = "version",
+    outs = ["resources/bazelhook/version"],
+    cmd = "{ sed -n 's/^BUILD_EMBED_LABEL //p' bazel-out/stable-status.txt 2>/dev/null | grep . || echo dev; } > $@",
+    stamp = -1,
+)
+
 # bazel build //agent:agent_deploy.jar -> the -javaagent jar
 hook_agent(
     name = "agent",

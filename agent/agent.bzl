@@ -8,7 +8,8 @@ def hook_agent(name, server):
         srcs = native.glob(["src/bazelhook/*.java"]),
         # The Linux x86_64 renderer, loaded by NativeUi when the server runs
         # on that platform; elsewhere the resource is absent and the UI is off.
-        resources = ["//agent:native_lib"],
+        # bazelhook/version: the release tag the jar was built from, "dev" otherwise.
+        resources = ["//agent:native_lib", "//agent:version"],
         resource_strip_prefix = "agent/resources",
         deps = [
             server,

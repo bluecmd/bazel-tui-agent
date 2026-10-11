@@ -135,6 +135,7 @@ pub fn decode(buf: &[u8]) -> Option<Stamped> {
             exec_root: r.str()?,
             show_result: r.i64()?,
             test_summary: r.str()?,
+            agent_version: r.str()?,
         },
         TAG_BUILD_STARTED => Event::BuildStarted { targets: r.list()?, build_id: r.str()? },
         TAG_PHASE => Event::Phase {

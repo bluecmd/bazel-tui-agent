@@ -56,6 +56,8 @@ pub enum Event {
         show_result: i64,
         /// Bazel's `--test_summary` format in lower case ("" for commands without it).
         test_summary: String,
+        /// The release tag the agent jar was built from ("dev" when unstamped).
+        agent_version: String,
     },
     BuildStarted { targets: Vec<String>, build_id: String },
     Phase { phase: Phase },

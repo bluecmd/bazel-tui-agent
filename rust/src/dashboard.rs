@@ -348,7 +348,8 @@ impl Dashboard {
                 let bl = Layout::horizontal([Constraint::Fill(1), Constraint::Length(bw as u16 + 1)]).split(hl[2]);
                 f.render_widget(Paragraph::new(Line::from(line3.clone())), bl[0]);
                 f.render_widget(Paragraph::new(Line::from(badges.clone())).right_aligned(), bl[1]);
-                let sb = panel("server", "");
+                // The agent's own version, top right of the screen.
+                let sb = panel("server", &if s.agent_version.is_empty() { String::new() } else { format!("tui {}", s.agent_version) });
                 let sinner = sb.inner(hs[1]);
                 f.render_widget(sb, hs[1]);
                 f.render_widget(Paragraph::new(server.clone()), sinner);
@@ -730,7 +731,7 @@ mod tests {
             s.apply(&Stamped { t_ms: t, event: ev });
             s.sample(t);
         };
-        push(&mut s, Event::CommandStarted { command: "build".into(), command_id: String::new(), workspace: String::new(), cwd: String::new(), args: vec!["//...".into()], start_ms: 1_000_000, bazel_version: String::new(), agent_jar: String::new(), agent_jar_mtime_ms: 0, exec_root: String::new(), show_result: 1, test_summary: "short".into() });
+        push(&mut s, Event::CommandStarted { command: "build".into(), command_id: String::new(), workspace: String::new(), cwd: String::new(), args: vec!["//...".into()], start_ms: 1_000_000, bazel_version: String::new(), agent_jar: String::new(), agent_jar_mtime_ms: 0, exec_root: String::new(), show_result: 1, test_summary: "short".into(), agent_version: "v0.3".into() });
         push(&mut s, Event::BuildStarted { targets: vec![], build_id: String::new() });
         for i in 0..40 {
             let ev = match i % 8 {

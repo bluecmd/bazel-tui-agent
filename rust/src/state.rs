@@ -163,6 +163,7 @@ pub struct State {
     pub exec_root: String,
     pub show_result: i64,
     pub test_summary: String,
+    pub agent_version: String,
     pub t0_ms: i64,
     pub phase: String,
     pub phase_t: HashMap<String, i64>,
@@ -314,7 +315,7 @@ impl State {
     pub fn apply(&mut self, ev: &Stamped) {
         let now = ev.t_ms;
         match &ev.event {
-            Event::CommandStarted { command, args, workspace, exec_root, show_result, test_summary, agent_jar, agent_jar_mtime_ms, .. } => {
+            Event::CommandStarted { command, args, workspace, exec_root, show_result, test_summary, agent_jar, agent_jar_mtime_ms, agent_version, .. } => {
                 self.command = Some(command.clone());
                 self.args = args.clone();
                 self.workspace = workspace.clone();
@@ -323,6 +324,7 @@ impl State {
                 self.exec_root = exec_root.clone();
                 self.show_result = *show_result;
                 self.test_summary = test_summary.clone();
+                self.agent_version = agent_version.clone();
                 self.t0_ms = now;
                 self.tp_last = (now, 0);
                 self.last_sample_ms = now;

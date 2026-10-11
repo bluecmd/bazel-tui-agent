@@ -15,8 +15,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Stamped with the tag on releases (bazelhook/version in the jar, "tui v0.3" in the UI).
       - name: Build the agent jar
-        run: bazelisk build //agent:agent_deploy.jar
+        run: bazelisk build --stamp --embed_label="$LABEL" //agent:agent_deploy.jar
+        env:
+          LABEL: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
 
       - name: Collect
         run: cp bazel-bin/agent/agent_deploy.jar bazel-tui-agent.jar

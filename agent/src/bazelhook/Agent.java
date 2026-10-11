@@ -114,6 +114,21 @@ public final class Agent {
     }
   }
 
+  /**
+   * The release this jar was built from ({@code bazel build --stamp --embed_label=v0.3}), "dev"
+   * for an unstamped build, "" when the resource is missing.
+   */
+  public static String version() {
+    try (java.io.InputStream in = Agent.class.getResourceAsStream("/bazelhook/version")) {
+      if (in == null) {
+        return "";
+      }
+      return new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).trim();
+    } catch (java.io.IOException e) {
+      return "";
+    }
+  }
+
   /** Last-modified time of that jar when the server started; lets the UI spot a stale server. */
   public static long jarMtimeMs() {
     return jarMtimeMs;

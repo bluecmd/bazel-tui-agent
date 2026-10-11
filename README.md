@@ -39,8 +39,21 @@ inside, and the cache panel shows where the actions came from.
 
 ## Enable
 
-Download `bazel-tui-agent.jar` from the [releases](../../releases) and add
-the startup option to your `~/.bazelrc` (or a workspace `.bazelrc`):
+Quick install:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/bluecmd/bazel-tui-agent/main/install.sh | bash
+```
+
+That downloads the newest release (pre-releases included) to
+`~/.local/share/bazel-tui-agent/bazel-tui-agent.jar` and appends the startup
+line below to `~/.bazelrc`. Run it again to update; `VERSION=v0.3` picks a
+release, `DIR` and `BAZELRC_FILE` change the locations. The installed version
+shows in the dashboard's top-right corner (`tui v0.3`).
+
+By hand instead: download `bazel-tui-agent.jar` from the
+[releases](../../releases) and add the startup option to your `~/.bazelrc`
+(or a workspace `.bazelrc`):
 
 ```
 startup --host_jvm_args=-javaagent:/absolute/path/to/bazel-tui-agent.jar
@@ -70,6 +83,10 @@ Linux x86_64 only for the UI. One jar runs on Bazel 6.6 through 9.3.
 ```sh
 bazel build //agent:agent_deploy.jar   # -> bazel-bin/agent/agent_deploy.jar
 ```
+
+Such a jar reports itself as `tui dev`. Releases are built with
+`--stamp --embed_label=<tag>` (the workflow does this on `v*` tags), which
+puts the tag in `bazelhook/version` inside the jar.
 
 ## Extra: Bazel autocomplete for fish
 

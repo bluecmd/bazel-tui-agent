@@ -93,7 +93,8 @@ final class EventForwarder implements EventHandler {
             .i64(Agent.jarMtimeMs())
             .str(execRoot(env))
             .i64(showResult(env))
-            .str(testSummary(env)));
+            .str(testSummary(env))
+            .str(Agent.version()));
     commandThread = Thread.currentThread();
     Agent.takeCancel(); // a cancel left over from an earlier command is not ours
     env.getEventBus().register(this);
