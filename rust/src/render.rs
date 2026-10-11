@@ -112,13 +112,25 @@ pub(crate) fn download_spans(s: &State, labelw: usize, barw: usize, now: i64) ->
 /// The numbers next to a download's bar: "31%  37.2/120 MiB  4.1 MiB/s", each part only when
 /// known. Repository fetches (no byte counts) get Bazel's own text instead.
 pub(crate) fn fetch_detail(f: &Fetch) -> Vec<Span<'static>> {
+    fetch_detail_with(f, false)
+}
+
+/// `fetch_detail` with every column padded to a fixed width, so the bars of several downloads
+/// listed one per line start at the same column.
+pub(crate) fn fetch_detail_aligned(f: &Fetch) -> Vec<Span<'static>> {
+    fetch_detail_with(f, true)
+}
+
+fn fetch_detail_with(f: &Fetch, aligned: bool) -> Vec<Span<'static>> {
     let mut out = Vec::new();
     if !f.is_download() {
         out.push(Span::styled(f.progress.chars().take(40).collect::<String>(), st(MUTED)));
         return out;
     }
-    if let Some(frac) = f.frac() {
-        out.push(Span::styled(format!("{:3}%", (frac * 100.0) as u32), bold(TITLE)));
+    match f.frac() {
+        Some(frac) => out.push(Span::styled(format!("{:3}%", (frac * 100.0) as u32), bold(TITLE))),
+        None if aligned => out.push(Span::raw("    ")),
+        None => {}
     }
     let size = if f.total > 0 {
         // Same unit for both numbers so "37.2/120 MiB" reads as one quantity.
@@ -132,9 +144,15 @@ pub(crate) fn fetch_detail(f: &Fetch) -> Vec<Span<'static>> {
     } else {
         fmt_size(f.bytes)
     };
-    out.push(Span::raw(format!("  {}", size)));
-    if let Some(rate) = f.rate() {
-        out.push(Span::styled(format!("  {}/s", fmt_size(rate as u64)), st(MUTED)));
+    let rate = f.rate().map(|r| format!("{}/s", fmt_size(r as u64))).unwrap_or_default();
+    if aligned {
+        out.push(Span::raw(format!("  {:>13}", size)));
+        out.push(Span::styled(format!("  {:>10}", rate), st(MUTED)));
+    } else {
+        out.push(Span::raw(format!("  {}", size)));
+        if !rate.is_empty() {
+            out.push(Span::styled(format!("  {}", rate), st(MUTED)));
+        }
     }
     out
 }
@@ -685,6 +703,18 @@ mod fetch_render_tests {
         let t = text(&fetch_detail(&f));
         assert_eq!(t, " 30%  37/120 MiB  14 MiB/s", "{t}");
         assert_eq!(text(&fetch_bar(&f, 10, 0)), "███▁░░░░░░");
+    }
+
+    #[test]
+    fn aligned_detail_has_the_same_width_whatever_is_known() {
+        let mut known = Fetch::default();
+        known.update(0, "", 10 << 20, 120 << 20);
+        known.update(2000, "", 37 << 20, 120 << 20);
+        let mut unknown = Fetch::default();
+        unknown.update(0, "12 MiB", 12 << 20, 0);
+        let (a, b) = (text(&super::fetch_detail_aligned(&known)), text(&super::fetch_detail_aligned(&unknown)));
+        assert_eq!(a.chars().count(), b.chars().count(), "{a:?} vs {b:?}");
+        assert_eq!(a, " 30%     37/120 MiB    14 MiB/s");
     }
 
     #[test]

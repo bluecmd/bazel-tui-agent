@@ -10,7 +10,7 @@ use ratatui::widgets::{Bar, BarChart, BarGroup, Block, BorderType, Borders, Para
 use ratatui::Terminal;
 use unicode_width::UnicodeWidthStr;
 
-use crate::render::{bar_spans, buffer_to_ansi, download_spans, fetch_bar, fetch_detail, fetch_label, st, bold, dim, sparkline_levels};
+use crate::render::{bar_spans, buffer_to_ansi, download_spans, fetch_bar, fetch_detail, fetch_detail_aligned, fetch_label, st, bold, dim, sparkline_levels};
 use crate::state::{ActState, Node, Source, State};
 use crate::text::*;
 
@@ -255,9 +255,10 @@ impl Dashboard {
                 let mut right = Vec::new();
                 if f.is_download() {
                     right.extend(fetch_bar(f, barw, now));
-                    right.push(Span::raw(" "));
+                    right.extend(fetch_detail_aligned(f));
+                } else {
+                    right.extend(fetch_detail(f));
                 }
-                right.extend(fetch_detail(f));
                 running_lines.push((left, right));
             }
         }
