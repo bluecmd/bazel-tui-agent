@@ -84,7 +84,12 @@ pub(crate) fn fetch_label(res: &str, width: usize) -> String {
     if short.chars().count() <= width {
         return short;
     }
-    short_label(file, width)
+    if file.chars().count() <= width {
+        return file.to_string();
+    }
+    // File names say what they are at the start (rustc-…, rust-std-…), so cut the end.
+    let head: String = file.chars().take(width.saturating_sub(1)).collect();
+    format!("{}…", head)
 }
 
 /// The download to feature in a one-line view (the furthest along) with its bar and numbers:
@@ -100,13 +105,29 @@ pub(crate) fn downloads(s: &State) -> Vec<(&String, &Fetch)> {
 pub(crate) fn download_spans(s: &State, labelw: usize, barw: usize, now: i64) -> Option<Vec<Span<'static>>> {
     let downloads = downloads(s);
     let (res, f) = downloads.first()?;
-    let mut out = vec![Span::styled("↓ ", st(ACCENT)), Span::raw(fetch_label(res, labelw)), Span::raw(" ")];
+    let mut out = vec![Span::styled("↓ ", st(ACCENT))];
+    if labelw > 0 {
+        out.push(Span::raw(fetch_label(res, labelw)));
+        out.push(Span::raw(" "));
+    }
     out.extend(fetch_bar(f, barw, now));
     out.extend(fetch_detail(f));
     if downloads.len() > 1 {
         out.push(Span::styled(format!("  +{} more", downloads.len() - 1), dim()));
     }
     Some(out)
+}
+
+/// `download_spans` sized to fit in `avail` columns: the bar and numbers first, the label with
+/// whatever is left. None when even a short bar would not fit.
+pub(crate) fn download_spans_fitting(s: &State, avail: usize, now: i64) -> Option<Vec<Span<'static>>> {
+    const NUMBERS: usize = 30; // "↓ " + " 62%  30/48 MiB  6.0 MiB/s" + "  +1 more"
+    if avail < NUMBERS + 6 {
+        return None;
+    }
+    let barw = ((avail - NUMBERS) / 3).clamp(6, 24);
+    let labelw = avail.saturating_sub(NUMBERS + barw + 1);
+    download_spans(s, if labelw >= 8 { labelw.min(40) } else { 0 }, barw, now)
 }
 
 /// The numbers next to a download's bar: "31%  37.2/120 MiB  4.1 MiB/s", each part only when
@@ -284,17 +305,23 @@ impl Renderer {
             progress.push(Span::styled("ABORTING ", bold(ABORT)));
             progress.push(Span::styled(format!("Ctrl-C received · stopping {} running action(s), {}s so far · a third Ctrl-C kills the server", s.running_count(), secs), st(ABORT)));
         } else if s.analysis_live() {
+            // The execution count sits at the right edge; a download's bar comes before the
+            // counter's long text and that count when the width is short.
+            let exec = counts.filter(|(_, total)| *total > 1).map(|(done, total)| format!("executing {}/{}", with_commas(done), with_commas(total)));
+            let need = if downloads(s).is_empty() { 0 } else { 46 };
             progress.push(Span::styled("analysis ", st(MUTED)));
-            progress.push(Span::raw(s.analysis.clone().unwrap_or_default()));
-            if let Some(dl) = download_spans(s, 24, 10, now) {
+            let a = s.analysis.clone().unwrap_or_default();
+            let a_max = width.saturating_sub(9 + need + exec.as_ref().map_or(0, |e| e.chars().count() + 3)).max(16);
+            progress.push(Span::raw(if a.chars().count() > a_max { format!("{}…", a.chars().take(a_max - 1).collect::<String>()) } else { a }));
+            let used = progress.iter().map(|sp| sp.content.width()).sum::<usize>();
+            let right_w = exec.as_ref().map_or(0, |e| e.chars().count() + 3);
+            if let Some(dl) = download_spans_fitting(s, width.saturating_sub(used + right_w + 2), now) {
                 progress.push(Span::raw("  "));
                 progress.extend(dl);
                 dl_shown = true;
             }
-            if let Some((done, total)) = counts {
-                if total > 1 {
-                    progress_right.push(Span::styled(format!("executing {}/{}", with_commas(done), with_commas(total)), st(MUTED)));
-                }
+            if let Some(e) = exec {
+                progress_right.push(Span::styled(e, st(MUTED)));
             }
         } else if let Some((done, total)) = counts {
             let frac = if total > 0 { done as f64 / total as f64 } else { 0.0 };
@@ -337,7 +364,7 @@ impl Renderer {
         } else if let (Some(l), false) = (&s.loading, s.analysis_done) {
             progress.push(Span::styled("loading ", st(MUTED)));
             progress.push(Span::raw(l.clone()));
-            if let Some(dl) = download_spans(s, 24, 10, now) {
+            if let Some(dl) = download_spans_fitting(s, width.saturating_sub(progress.iter().map(|sp| sp.content.width()).sum::<usize>() + 2), now) {
                 progress.push(Span::raw("  "));
                 progress.extend(dl);
                 dl_shown = true;
@@ -347,7 +374,7 @@ impl Renderer {
         } else if let Some(a) = &s.analysis {
             progress.push(Span::styled("analysis ", st(MUTED)));
             progress.push(Span::raw(a.clone()));
-            if let Some(dl) = download_spans(s, 24, 10, now) {
+            if let Some(dl) = download_spans_fitting(s, width.saturating_sub(progress.iter().map(|sp| sp.content.width()).sum::<usize>() + 2), now) {
                 progress.push(Span::raw("  "));
                 progress.extend(dl);
                 dl_shown = true;
@@ -731,7 +758,7 @@ mod fetch_render_tests {
         let url = "https://github.com/bazelbuild/bazel/releases/download/8.4.2/bazel-8.4.2-linux-x86_64";
         assert_eq!(super::fetch_label(url, 50), "github.com …/bazel-8.4.2-linux-x86_64");
         assert_eq!(super::fetch_label(url, 100), "github.com/bazelbuild/bazel/releases/download/8.4.2/bazel-8.4.2-linux-x86_64");
-        assert_eq!(super::fetch_label(url, 20), "…-8.4.2-linux-x86_64");
+        assert_eq!(super::fetch_label(url, 20), "bazel-8.4.2-linux-x…");
         assert_eq!(super::fetch_label("repository @@foo", 40), "repository @@foo");
     }
 

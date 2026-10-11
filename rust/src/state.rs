@@ -365,6 +365,11 @@ impl State {
             Event::Fetch { resource, progress, finished, bytes, total } => {
                 if *finished {
                     self.fetches.remove(resource);
+                    // Bazel's last "Downloading <url>: N bytes" progress message would otherwise
+                    // stay as the activity after the download it describes is over.
+                    if self.activity.starts_with("Downloading ") && !self.fetches.values().any(|f| f.is_download()) {
+                        self.activity.clear();
+                    }
                 } else {
                     let f = self.fetches.entry(resource.clone()).or_insert_with(Fetch::default);
                     f.update(now, progress, *bytes, *total);
@@ -619,6 +624,21 @@ mod fetch_tests {
         u.update(0, "12 MiB", 12 << 20, 0);
         assert!(u.is_download());
         assert_eq!(u.frac(), None);
+    }
+
+    #[test]
+    fn finished_download_clears_its_stale_progress_message() {
+        use crate::events::{Event, Stamped};
+        let mut s = super::State::default();
+        let fetch = |finished: bool| Stamped { t_ms: 1000, event: Event::Fetch { resource: "https://x/y.tar".into(), progress: "1 MiB".into(), finished, bytes: 1 << 20, total: 0 } };
+        s.apply(&fetch(false));
+        s.activity = "Downloading https://x/y.tar: 1,048,576 bytes".into();
+        s.apply(&fetch(true));
+        assert_eq!(s.activity, "");
+        s.activity = "Loading package: foo".into();
+        s.apply(&fetch(false));
+        s.apply(&fetch(true));
+        assert_eq!(s.activity, "Loading package: foo");
     }
 
     #[test]

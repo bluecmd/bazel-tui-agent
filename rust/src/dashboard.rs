@@ -10,7 +10,7 @@ use ratatui::widgets::{Bar, BarChart, BarGroup, Block, BorderType, Borders, Para
 use ratatui::Terminal;
 use unicode_width::UnicodeWidthStr;
 
-use crate::render::{bar_spans, buffer_to_ansi, download_spans, fetch_bar, fetch_detail, fetch_detail_aligned, fetch_label, st, bold, dim, sparkline_levels};
+use crate::render::{bar_spans, buffer_to_ansi, download_spans_fitting, fetch_bar, fetch_detail, fetch_detail_aligned, fetch_label, st, bold, dim, sparkline_levels};
 use crate::state::{ActState, Node, Source, State};
 use crate::text::*;
 
@@ -45,6 +45,13 @@ fn panel(title: &str, right: &str) -> Block<'static> {
     b
 }
 
+
+/// Columns a download needs on the header line: bar, numbers and a short label.
+const DOWNLOAD_MIN: usize = 46;
+
+fn line_width(spans: &[Span]) -> usize {
+    spans.iter().map(|sp| sp.content.width()).sum()
+}
 
 impl Dashboard {
     pub fn new(cols: u16, rows: u16, color: bool) -> Dashboard {
@@ -99,6 +106,8 @@ impl Dashboard {
             state_span,
         ]);
         let counts = s.exec_counts();
+        // Inner width of the build panel (the server panel takes a quarter, 30..40 columns).
+        let header_w = (self.cols as usize).saturating_sub((self.cols as usize / 4).clamp(30, 40) + 2);
         let mut line2: Vec<Span> = Vec::new();
         if s.cancelling() {
             let secs = (now - s.cancelled_ms.unwrap_or(now)) / 1000;
@@ -109,15 +118,23 @@ impl Dashboard {
             ));
         } else if s.analysis_live() {
             // Skymeld: analysis and execution overlap; the analysis counter is the one moving.
+            // A download in flight gets its bar on this line too, ahead of the counter's long
+            // text and the execution count when the width is short.
+            let need = if crate::render::downloads(s).is_empty() { 0 } else { DOWNLOAD_MIN };
             line2.push(Span::styled("analysis  ", st(MUTED)));
-            line2.push(Span::raw(s.analysis.clone().unwrap_or_default()));
+            let a = s.analysis.clone().unwrap_or_default();
+            let a_max = header_w.saturating_sub(line_width(&line2) + need + 2).max(16);
+            line2.push(Span::raw(if a.chars().count() > a_max { format!("{}…", a.chars().take(a_max - 1).collect::<String>()) } else { a }));
             if let Some((done, total)) = counts {
                 if total > 1 {
-                    line2.push(Span::styled(format!("  · executing {}/{}", with_commas(done), with_commas(total)), st(MUTED)));
+                    let e = format!("  · executing {}/{}", with_commas(done), with_commas(total));
+                    if line_width(&line2) + e.chars().count() + need + 2 <= header_w {
+                        line2.push(Span::styled(e, st(MUTED)));
+                    }
                 }
             }
-            let room = (self.cols as usize).saturating_sub(70);
-            if let Some(dl) = download_spans(s, (room / 3).clamp(12, 40), (room / 5).clamp(8, 24), now) {
+            let room = header_w.saturating_sub(line_width(&line2) + 2);
+            if let Some(dl) = download_spans_fitting(s, room, now) {
                 // A download in flight is the activity; Bazel's "Downloading …: N bytes" text is
                 // the same information without the bar.
                 line2.push(Span::raw("  "));
@@ -139,8 +156,7 @@ impl Dashboard {
         } else if let (Some(l), false) = (&s.loading, s.analysis_done) {
             line2.push(Span::styled("loading  ", st(MUTED)));
             line2.push(Span::raw(l.clone()));
-            let room = (self.cols as usize).saturating_sub(40);
-            if let Some(dl) = download_spans(s, (room / 3).clamp(12, 40), (room / 5).clamp(8, 24), now) {
+            if let Some(dl) = download_spans_fitting(s, header_w.saturating_sub(line_width(&line2) + 2), now) {
                 line2.push(Span::raw("  "));
                 line2.extend(dl);
             } else if let Some(d) = &s.loading_detail {
@@ -149,8 +165,7 @@ impl Dashboard {
         } else if let Some(a) = &s.analysis {
             line2.push(Span::styled("analysis  ", st(MUTED)));
             line2.push(Span::raw(a.clone()));
-            let room = (self.cols as usize).saturating_sub(40);
-            if let Some(dl) = download_spans(s, (room / 3).clamp(12, 40), (room / 5).clamp(8, 24), now) {
+            if let Some(dl) = download_spans_fitting(s, header_w.saturating_sub(line_width(&line2) + 2), now) {
                 line2.push(Span::raw("  "));
                 line2.extend(dl);
             }
@@ -250,8 +265,12 @@ impl Dashboard {
         let fetching = !s.fetches.is_empty();
         if fetching {
             let barw = (self.cols as usize / 8).clamp(8, 24);
+            // The panel is the width left of the build tree (40%, min 34); the numbers take a
+            // fixed 33 columns after the bar.
+            let panel_w = (self.cols as usize).saturating_sub(((self.cols as f32 * 0.4) as usize).max(34)).saturating_sub(2);
+            let labelw = panel_w.saturating_sub(barw + 33 + 5).clamp(12, 70);
             for (res, f) in s.fetches.iter() {
-                let left = vec![Span::raw(" "), Span::styled("↓ ", st(ACCENT)), Span::raw(fetch_label(res, 70))];
+                let left = vec![Span::raw(" "), Span::styled("↓ ", st(ACCENT)), Span::raw(fetch_label(res, if f.is_download() { labelw } else { 70 }))];
                 let mut right = Vec::new();
                 if f.is_download() {
                     right.extend(fetch_bar(f, barw, now));
@@ -747,6 +766,33 @@ mod tests {
         let text = d.render(&s, &[], now + 1_000).join("\n");
         assert!(text.contains("ABORTING") && text.contains("Ctrl-C received") && text.contains("aborting"), "{}", text);
         assert!(r.render(&s, now + 1_000).contains("ABORTING"));
+    }
+
+    #[test]
+    fn header_download_fits_next_to_long_analysis_text() {
+        let mut s = synthetic();
+        let t = 1_100_000i64;
+        s.apply(&Stamped { t_ms: t, event: Event::Phase { phase: crate::events::Phase::Execution } });
+        s.apply(&Stamped { t_ms: t, event: Event::Progress { loading: String::new(), loading_detail: String::new(), analysis: "51899 targets configured, 101 aspect applications".into(), execution: "[19 / 19]".into() } });
+        let url = "https://static.rust-lang.org/dist/rustc-1.97.1-x86_64-unknown-linux-gnu.tar.xz";
+        s.apply(&Stamped { t_ms: t, event: Event::Fetch { resource: url.into(), progress: String::new(), finished: false, bytes: 10 << 20, total: 77 << 20 } });
+        s.apply(&Stamped { t_ms: t + 2000, event: Event::Fetch { resource: url.into(), progress: String::new(), finished: false, bytes: 14 << 20, total: 77 << 20 } });
+        assert!(s.analysis_live());
+        for cols in [100u16, 132, 200] {
+            let mut d = Dashboard::new(cols, 40, false);
+            let frame = d.render(&s, &[], t + 2000);
+            let header = frame.iter().find(|l| l.starts_with("│analysis")).expect("header line");
+            // The numbers are there in full, before the panel's right border; the counter text
+            // and the execution count give way when the width is short.
+            assert!(header.contains("14/77 MiB") && header.contains("18%"), "{cols}: {header}");
+            assert!(header.contains("MiB/s"), "{cols}: {header}");
+            if std::env::var("SHOW").is_ok() {
+                println!("{cols}: {header}");
+            }
+            let mut r = crate::render::Renderer::new(cols as usize, false, 12);
+            let inline = r.render(&s, t + 2000);
+            assert!(inline.contains("14/77 MiB"), "{cols}: {inline}");
+        }
     }
 
     #[test]
