@@ -104,7 +104,9 @@ pub enum Event {
     },
     BuildComplete { success: bool, catastrophe: bool, exit_code: i64, stop_ms: i64 },
     NoBuild,
-    Fetch { resource: String, progress: String, finished: bool },
+    /// `bytes`/`total` are set for HTTP downloads (total 0 when the size is unknown), both 0
+    /// for repository-rule fetches.
+    Fetch { resource: String, progress: String, finished: bool, bytes: u64, total: u64 },
     Message(Message),
     System { heap_used_mb: u64, heap_max_mb: u64, load: f64, cpus: u64 },
     CommandFinished,

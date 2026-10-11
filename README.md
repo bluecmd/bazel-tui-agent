@@ -137,7 +137,7 @@ getClientEnv`; `OptionsParser.parse(SOFTWARE_REQUIREMENT, …)` for
 | `runtime.TestSummary` | `getLabel()`, `getStatus()`, `totalRuns()`, `isCached()`, `isSkipped()`, `getFailedTestCases()` (→ `getClassName()`, `getName()`), `getTotalTestCases()`, `getTestTimes()`, `getFailedLogs()`, `getPassedLogs()`, `getNumAttempts()`, `wasUnreportedWrongSize()` |
 | `buildtool.buildevent.BuildCompleteEvent` | `getResult()` → `getSuccess()`, `wasCatastrophe()`, `getDetailedExitCode().getExitCode().getNumericExitCode()`, `getStopTime()` |
 | `analysis.NoBuildEvent` | marker only |
-| `events.ExtendedEventHandler$FetchProgress` | `getResourceIdentifier()`, `getProgress()`, `isFinished()` |
+| `events.ExtendedEventHandler$FetchProgress` | `getResourceIdentifier()`, `getProgress()`, `isFinished()`; on `DownloadProgressEvent` also `getBytesRead()` and the private `totalBytes` field (see below) |
 
 ### Reporter
 
@@ -163,6 +163,7 @@ writes the reporter's `OutErr` re-posts.
 | --- | --- |
 | `CommandEnvironment.getUiEventHandler()` (9+), else the `Reporter.eventHandlers` queue, then `UiEventHandler.outErr` | the real client stream; the reporter's own `OutErr` would re-post every write as an event |
 | `TerminalSizeMonitor` (9.3+): nested `Listener` interface, `addListener`, `terminalSizeChanged(cols, rows)` | width fallback when the client's pty cannot be found |
+| `DownloadProgressEvent.totalBytes` (`OptionalLong`, the Content-Length) | the download progress bar; `getBytesRead()` is public but the total has no accessor |
 
 ### The `help` index (reflection, `bazel help` only)
 

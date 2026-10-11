@@ -187,7 +187,7 @@ pub fn decode(buf: &[u8]) -> Option<Stamped> {
         },
         TAG_BUILD_COMPLETE => Event::BuildComplete { success: r.bool()?, catastrophe: r.bool()?, exit_code: r.i64()?, stop_ms: r.i64()? },
         TAG_NO_BUILD => Event::NoBuild,
-        TAG_FETCH => Event::Fetch { resource: r.str()?, progress: r.str()?, finished: r.bool()? },
+        TAG_FETCH => Event::Fetch { resource: r.str()?, progress: r.str()?, finished: r.bool()?, bytes: r.i64()?.max(0) as u64, total: r.i64()?.max(0) as u64 },
         TAG_MESSAGE => Event::Message(Message { kind: r.str()?, text: r.str()?, location: r.str()?, tag: r.str()?, stdout: r.str()?, stderr: r.str()? }),
         TAG_SYSTEM => Event::System { heap_used_mb: r.u64()?, heap_max_mb: r.u64()?, load: r.f64()?, cpus: r.u64()? },
         TAG_COMMAND_FINISHED => Event::CommandFinished,

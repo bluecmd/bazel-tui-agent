@@ -25,6 +25,8 @@ pub fn gradient(stops: &[(f32, (u8, u8, u8))], t: f32) -> (u8, u8, u8) {
     stops[stops.len() - 1].1
 }
 
+/// Download bars: blue to teal, distinct from the action heat scale.
+pub const DOWNLOAD: &[(f32, (u8, u8, u8))] = &[(0.0, (80, 140, 255)), (1.0, (80, 220, 200))];
 pub const HEAT: &[(f32, (u8, u8, u8))] = &[(0.0, (80, 160, 255)), (0.5, (90, 220, 120)), (0.8, (250, 200, 60)), (1.0, (255, 80, 80))];
 pub const COOL: &[(f32, (u8, u8, u8))] = &[(0.0, (60, 90, 160)), (1.0, (120, 200, 255))];
 pub const BORDER: (u8, u8, u8) = (90, 100, 130);

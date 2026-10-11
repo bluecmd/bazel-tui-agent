@@ -1,9 +1,64 @@
 //! Build state reconstructed from the protocol events (PROTOCOL.md).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use crate::events::{ActionRef, Event, Phase, Stamped};
 use crate::text::short_repo;
+
+/// A repository fetch or HTTP download in flight (`Event::Fetch`).
+#[derive(Clone, Default, Debug)]
+pub struct Fetch {
+    /// Bazel's own text ("37 MiB (30.4%)", "Fetching repository @foo", "starting").
+    pub progress: String,
+    pub bytes: u64,
+    /// Content-Length, 0 when unknown.
+    pub total: u64,
+    /// (time, bytes) over the last few seconds, for the transfer rate.
+    pub samples: VecDeque<(i64, u64)>,
+}
+
+impl Fetch {
+    const RATE_WINDOW_MS: i64 = 5000;
+
+    /// True for an HTTP download, which has byte counts; repository-rule fetches only have text.
+    pub fn is_download(&self) -> bool {
+        self.bytes > 0 || self.total > 0
+    }
+
+    /// Fraction done, from the byte counts or, failing that, the "(30.4%)" in Bazel's text.
+    pub fn frac(&self) -> Option<f64> {
+        if self.total > 0 {
+            return Some((self.bytes as f64 / self.total as f64).clamp(0.0, 1.0));
+        }
+        let open = self.progress.rfind('(')?;
+        let pct = self.progress[open + 1..].strip_suffix("%)")?.trim();
+        pct.parse::<f64>().ok().map(|p| (p / 100.0).clamp(0.0, 1.0))
+    }
+
+    /// Bytes per second over the sample window, once there is half a second of data.
+    pub fn rate(&self) -> Option<f64> {
+        let (t0, b0) = *self.samples.front()?;
+        let (t1, b1) = *self.samples.back()?;
+        if t1 - t0 < 500 || b1 < b0 {
+            return None;
+        }
+        Some((b1 - b0) as f64 * 1000.0 / (t1 - t0) as f64)
+    }
+
+    pub(crate) fn update(&mut self, now: i64, progress: &str, bytes: u64, total: u64) {
+        self.progress = progress.to_string();
+        self.bytes = bytes;
+        if total > 0 {
+            self.total = total;
+        }
+        if bytes > 0 {
+            self.samples.push_back((now, bytes));
+            while self.samples.len() > 2 && now - self.samples[0].0 > Self::RATE_WINDOW_MS {
+                self.samples.pop_front();
+            }
+        }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ActState {
@@ -119,7 +174,7 @@ pub struct State {
     pub build_started: bool,
     /// Latest PROGRESS-kind message ("Computing main repo mapping", "Loading package: ...").
     pub activity: String,
-    pub fetches: BTreeMap<String, String>,
+    pub fetches: BTreeMap<String, Fetch>,
     pub actions: HashMap<String, Action>,
     pub completed: u64,
     pub failed_actions: u64,
@@ -307,11 +362,12 @@ impl State {
                 self.analysis_done = true;
                 self.analysis = None;
             }
-            Event::Fetch { resource, progress, finished } => {
+            Event::Fetch { resource, progress, finished, bytes, total } => {
                 if *finished {
                     self.fetches.remove(resource);
                 } else {
-                    self.fetches.insert(resource.clone(), progress.clone());
+                    let f = self.fetches.entry(resource.clone()).or_insert_with(Fetch::default);
+                    f.update(now, progress, *bytes, *total);
                 }
             }
             Event::ActionStarted { action, .. } => self.ensure_action(action, now),
@@ -540,5 +596,42 @@ impl State {
         }
         let rate = (done - self.exec_done0) as f64 / elapsed;
         if rate > 0.0 { Some((total - done) as f64 / rate) } else { None }
+    }
+}
+
+#[cfg(test)]
+mod fetch_tests {
+    use super::Fetch;
+
+    #[test]
+    fn fraction_from_bytes_or_bazels_percentage() {
+        let mut f = Fetch::default();
+        f.update(0, "37 MiB (30.4%)", 0, 0);
+        assert_eq!(f.frac().map(|x| (x * 1000.0).round()), Some(304.0));
+        assert!(!f.is_download());
+        f.update(100, "40 MiB (33.3%)", 40 << 20, 120 << 20);
+        assert!(f.is_download());
+        assert_eq!(f.frac().map(|x| (x * 3.0).round()), Some(1.0));
+        let mut r = Fetch::default();
+        r.update(0, "Fetching repository @@foo", 0, 0);
+        assert_eq!(r.frac(), None);
+        let mut u = Fetch::default();
+        u.update(0, "12 MiB", 12 << 20, 0);
+        assert!(u.is_download());
+        assert_eq!(u.frac(), None);
+    }
+
+    #[test]
+    fn rate_needs_half_a_second_and_uses_a_sliding_window() {
+        let mut f = Fetch::default();
+        f.update(0, "", 1 << 20, 0);
+        assert_eq!(f.rate(), None);
+        f.update(1000, "", 5 << 20, 0);
+        assert_eq!(f.rate().map(|r| (r / (1 << 20) as f64).round()), Some(4.0));
+        // Ten seconds later the old samples are gone and the rate reflects the recent stretch.
+        f.update(10_000, "", 6 << 20, 0);
+        f.update(11_000, "", 7 << 20, 0);
+        assert_eq!(f.rate().map(|r| (r / (1 << 20) as f64).round()), Some(1.0));
+        assert!(f.samples.len() <= 3);
     }
 }

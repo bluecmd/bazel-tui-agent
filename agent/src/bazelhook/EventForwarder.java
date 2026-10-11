@@ -403,7 +403,25 @@ final class EventForwarder implements EventHandler {
         new Packet(Packet.MESSAGE).str("PROGRESS").str("Computing main repo mapping").str("").str("").bytes(null).bytes(null));
     on(LIB + "events.ExtendedEventHandler$FetchProgress", e -> {
       FetchProgress ev = (FetchProgress) e;
-      return new Packet(Packet.FETCH).str(ev.getResourceIdentifier()).str(ev.getProgress()).bool(ev.isFinished());
+      // HTTP downloads (DownloadProgressEvent) also carry byte counts: bytesRead is public, the
+      // Content-Length is a private OptionalLong (absent when the server did not send one). Both
+      // are 0 for repository-rule fetches, which only have a text progress.
+      long bytes = 0;
+      long total = 0;
+      Object read = Reflect.call(e, "getBytesRead");
+      if (read instanceof Number) {
+        bytes = ((Number) read).longValue();
+      }
+      Object opt = Reflect.field(e, "totalBytes");
+      if (opt instanceof java.util.OptionalLong) {
+        total = ((java.util.OptionalLong) opt).orElse(0);
+      }
+      return new Packet(Packet.FETCH)
+          .str(ev.getResourceIdentifier())
+          .str(ev.getProgress())
+          .bool(ev.isFinished())
+          .i64(bytes)
+          .i64(total);
     });
     // Local action-cache hit: Bazel skipped the action entirely (the "N action cache hit" of its
     // summary). No spawn is produced for these, so they are the only way to count them.

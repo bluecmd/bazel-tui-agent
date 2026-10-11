@@ -10,7 +10,7 @@ use ratatui::widgets::{Bar, BarChart, BarGroup, Block, BorderType, Borders, Para
 use ratatui::Terminal;
 use unicode_width::UnicodeWidthStr;
 
-use crate::render::{buffer_to_ansi, st, bold, dim, sparkline_levels};
+use crate::render::{bar_spans, buffer_to_ansi, download_spans, fetch_bar, fetch_detail, fetch_label, st, bold, dim, sparkline_levels};
 use crate::state::{ActState, Node, Source, State};
 use crate::text::*;
 
@@ -45,24 +45,6 @@ fn panel(title: &str, right: &str) -> Block<'static> {
     b
 }
 
-fn bar_spans(frac: f64, width: usize, stops: &[(f32, (u8, u8, u8))]) -> Vec<Span<'static>> {
-    let frac = frac.clamp(0.0, 1.0);
-    let cells = frac * width as f64;
-    let full = cells.floor() as usize;
-    (0..width)
-        .map(|i| {
-            let t = i as f32 / (width.max(2) - 1) as f32;
-            if i < full {
-                Span::styled("█", st(gradient(stops, t)))
-            } else if i == full && cells - full as f64 > 0.0 {
-                let blocks = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-                Span::styled(blocks[(((cells - full as f64) * 8.0) as usize).clamp(1, 8)].to_string(), st(gradient(stops, t)))
-            } else {
-                Span::styled("░", st((45, 50, 65)))
-            }
-        })
-        .collect()
-}
 
 impl Dashboard {
     pub fn new(cols: u16, rows: u16, color: bool) -> Dashboard {
@@ -134,11 +116,14 @@ impl Dashboard {
                     line2.push(Span::styled(format!("  · executing {}/{}", with_commas(done), with_commas(total)), st(MUTED)));
                 }
             }
-            if !s.activity.is_empty() {
-                let room = (self.cols as usize).saturating_sub(70);
-                if room > 12 {
-                    line2.push(Span::styled(format!("  {}", s.activity.chars().take(room).collect::<String>()), dim()));
-                }
+            let room = (self.cols as usize).saturating_sub(70);
+            if let Some(dl) = download_spans(s, (room / 3).clamp(12, 40), (room / 5).clamp(8, 24), now) {
+                // A download in flight is the activity; Bazel's "Downloading …: N bytes" text is
+                // the same information without the bar.
+                line2.push(Span::raw("  "));
+                line2.extend(dl);
+            } else if !s.activity.is_empty() && room > 12 {
+                line2.push(Span::styled(format!("  {}", s.activity.chars().take(room).collect::<String>()), dim()));
             }
         } else if let Some((done, total)) = counts {
             let frac = if total > 0 { done as f64 / total as f64 } else { 0.0 };
@@ -154,16 +139,38 @@ impl Dashboard {
         } else if let (Some(l), false) = (&s.loading, s.analysis_done) {
             line2.push(Span::styled("loading  ", st(MUTED)));
             line2.push(Span::raw(l.clone()));
-            if let Some(d) = &s.loading_detail {
+            let room = (self.cols as usize).saturating_sub(40);
+            if let Some(dl) = download_spans(s, (room / 3).clamp(12, 40), (room / 5).clamp(8, 24), now) {
+                line2.push(Span::raw("  "));
+                line2.extend(dl);
+            } else if let Some(d) = &s.loading_detail {
                 line2.push(Span::styled(format!("  {}", d), dim()));
             }
         } else if let Some(a) = &s.analysis {
             line2.push(Span::styled("analysis  ", st(MUTED)));
             line2.push(Span::raw(a.clone()));
-        } else if let Some((res, prog)) = s.fetches.iter().find(|(_, p)| !p.is_empty() && *p != "starting") {
+            let room = (self.cols as usize).saturating_sub(40);
+            if let Some(dl) = download_spans(s, (room / 3).clamp(12, 40), (room / 5).clamp(8, 24), now) {
+                line2.push(Span::raw("  "));
+                line2.extend(dl);
+            }
+        } else if let Some((res, f)) = crate::render::downloads(s)
+            .first()
+            .copied()
+            .or_else(|| s.fetches.iter().find(|(_, f)| !f.progress.is_empty() && f.progress != "starting"))
+        {
             line2.push(Span::styled("fetching  ", st(MUTED)));
-            line2.push(Span::raw(short_label(res, 60)));
-            line2.push(Span::styled(format!("  {}", prog), dim()));
+            if f.is_download() {
+                let barw = (self.cols as usize / 5).clamp(10, 40);
+                line2.push(Span::raw(fetch_label(res, (self.cols as usize).saturating_sub(barw + 50).clamp(20, 60))));
+                line2.push(Span::raw("  "));
+                line2.extend(fetch_bar(f, barw, now));
+                line2.push(Span::raw(" "));
+            } else {
+                line2.push(Span::raw(short_label(res, 60)));
+                line2.push(Span::raw("  "));
+            }
+            line2.extend(fetch_detail(f));
         } else if !s.activity.is_empty() {
             line2.push(Span::raw(s.activity.clone()));
         } else {
@@ -242,9 +249,15 @@ impl Dashboard {
         // Downloads and repository fetches are listed first; they are the activity while actions wait.
         let fetching = !s.fetches.is_empty();
         if fetching {
-            for (res, prog) in s.fetches.iter() {
-                let left = vec![Span::raw(" "), Span::styled("↓ ", st(ACCENT)), Span::raw(short_label(res, 70))];
-                let right = vec![Span::styled(prog.chars().take(40).collect::<String>(), st(MUTED))];
+            let barw = (self.cols as usize / 8).clamp(8, 24);
+            for (res, f) in s.fetches.iter() {
+                let left = vec![Span::raw(" "), Span::styled("↓ ", st(ACCENT)), Span::raw(fetch_label(res, 70))];
+                let mut right = Vec::new();
+                if f.is_download() {
+                    right.extend(fetch_bar(f, barw, now));
+                    right.push(Span::raw(" "));
+                }
+                right.extend(fetch_detail(f));
                 running_lines.push((left, right));
             }
         }

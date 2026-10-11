@@ -13,7 +13,8 @@ use ratatui::widgets::{Block, Borders, Paragraph, Sparkline};
 use ratatui::Terminal;
 use unicode_width::UnicodeWidthStr;
 
-use crate::state::{ActState, Source, State};
+use crate::state::{ActState, Fetch, Source, State};
+use crate::summary::fmt_size;
 use crate::text::*;
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -21,6 +22,121 @@ const BLOCKS: &[char] = &[' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', 
 
 pub(crate) fn rgb((r, g, b): (u8, u8, u8)) -> Color {
     Color::Rgb(r, g, b)
+}
+
+const BAR_EMPTY: (u8, u8, u8) = (45, 50, 65);
+
+/// Gradient progress bar as spans, one cell each, with an eighth-block fractional cell.
+pub(crate) fn bar_spans(frac: f64, width: usize, stops: &[(f32, (u8, u8, u8))]) -> Vec<Span<'static>> {
+    let frac = frac.clamp(0.0, 1.0);
+    let cells = frac * width as f64;
+    let full = cells.floor() as usize;
+    (0..width)
+        .map(|i| {
+            let t = i as f32 / (width.max(2) - 1) as f32;
+            if i < full {
+                Span::styled("█", st(gradient(stops, t)))
+            } else if i == full && cells - full as f64 > 0.0 {
+                Span::styled(BLOCKS[(((cells - full as f64) * 8.0) as usize).clamp(1, 8)].to_string(), st(gradient(stops, t)))
+            } else {
+                Span::styled("░", st(BAR_EMPTY))
+            }
+        })
+        .collect()
+}
+
+/// Indeterminate bar: a short bright run sliding along, for a download without a known size.
+pub(crate) fn pulse_spans(width: usize, now: i64, stops: &[(f32, (u8, u8, u8))]) -> Vec<Span<'static>> {
+    const RUN: i64 = 4;
+    let w = width.max(1) as i64;
+    let head = (now / 100) % (w + RUN);
+    (0..w)
+        .map(|i| {
+            let d = head - i;
+            if (0..RUN).contains(&d) {
+                Span::styled("█", st(gradient(stops, 1.0 - d as f32 / RUN as f32)))
+            } else {
+                Span::styled("░", st(BAR_EMPTY))
+            }
+        })
+        .collect()
+}
+
+/// A download's bar: progress when the size (or Bazel's percentage) is known, a pulse otherwise.
+pub(crate) fn fetch_bar(f: &Fetch, width: usize, now: i64) -> Vec<Span<'static>> {
+    match f.frac() {
+        Some(frac) => bar_spans(frac, width, DOWNLOAD),
+        None => pulse_spans(width, now, DOWNLOAD),
+    }
+}
+
+/// A download's resource for display: URLs become "host …/file" so the file name survives
+/// truncation; anything else goes through `short_label`.
+pub(crate) fn fetch_label(res: &str, width: usize) -> String {
+    let Some((_, rest)) = res.split_once("://") else { return short_label(res, width) };
+    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let file = path.rsplit('/').next().unwrap_or("");
+    let full = format!("{}/{}", host, path);
+    if full.chars().count() <= width || file.is_empty() {
+        return short_label(&full, width);
+    }
+    let short = format!("{} …/{}", host, file);
+    if short.chars().count() <= width {
+        return short;
+    }
+    short_label(file, width)
+}
+
+/// The download to feature in a one-line view (the furthest along) with its bar and numbers:
+/// "↓ host …/file ████░░ 61%  37/61 MiB  6.0 MiB/s  +1 more". None without a download.
+/// The downloads in flight, the one to feature first: a known size beats an unknown one, then
+/// the most bytes so far.
+pub(crate) fn downloads(s: &State) -> Vec<(&String, &Fetch)> {
+    let mut v: Vec<(&String, &Fetch)> = s.fetches.iter().filter(|(_, f)| f.is_download()).collect();
+    v.sort_by(|a, b| b.1.frac().is_some().cmp(&a.1.frac().is_some()).then(b.1.bytes.cmp(&a.1.bytes)));
+    v
+}
+
+pub(crate) fn download_spans(s: &State, labelw: usize, barw: usize, now: i64) -> Option<Vec<Span<'static>>> {
+    let downloads = downloads(s);
+    let (res, f) = downloads.first()?;
+    let mut out = vec![Span::styled("↓ ", st(ACCENT)), Span::raw(fetch_label(res, labelw)), Span::raw(" ")];
+    out.extend(fetch_bar(f, barw, now));
+    out.extend(fetch_detail(f));
+    if downloads.len() > 1 {
+        out.push(Span::styled(format!("  +{} more", downloads.len() - 1), dim()));
+    }
+    Some(out)
+}
+
+/// The numbers next to a download's bar: "31%  37.2/120 MiB  4.1 MiB/s", each part only when
+/// known. Repository fetches (no byte counts) get Bazel's own text instead.
+pub(crate) fn fetch_detail(f: &Fetch) -> Vec<Span<'static>> {
+    let mut out = Vec::new();
+    if !f.is_download() {
+        out.push(Span::styled(f.progress.chars().take(40).collect::<String>(), st(MUTED)));
+        return out;
+    }
+    if let Some(frac) = f.frac() {
+        out.push(Span::styled(format!("{:3}%", (frac * 100.0) as u32), bold(TITLE)));
+    }
+    let size = if f.total > 0 {
+        // Same unit for both numbers so "37.2/120 MiB" reads as one quantity.
+        let total = fmt_size(f.total);
+        let unit = total.split_once(' ').map(|(_, u)| u).unwrap_or("B");
+        let done = fmt_size(f.bytes);
+        match done.split_once(' ') {
+            Some((n, u)) if u == unit => format!("{}/{}", n, total),
+            _ => format!("{} / {}", done, total),
+        }
+    } else {
+        fmt_size(f.bytes)
+    };
+    out.push(Span::raw(format!("  {}", size)));
+    if let Some(rate) = f.rate() {
+        out.push(Span::styled(format!("  {}/s", fmt_size(rate as u64)), st(MUTED)));
+    }
+    out
 }
 
 pub(crate) fn st(c: (u8, u8, u8)) -> Style {
@@ -88,21 +204,7 @@ impl Renderer {
 
     /// Gradient progress bar as spans, one cell each.
     fn bar(&self, frac: f64, width: usize) -> Vec<Span<'static>> {
-        let frac = frac.clamp(0.0, 1.0);
-        let cells = frac * width as f64;
-        let full = cells.floor() as usize;
-        (0..width)
-            .map(|i| {
-                let t = i as f32 / (width.max(2) - 1) as f32;
-                if i < full {
-                    Span::styled("█", st(gradient(HEAT, t)))
-                } else if i == full && cells - full as f64 > 0.0 {
-                    Span::styled(BLOCKS[(((cells - full as f64) * 8.0) as usize).clamp(1, 8)].to_string(), st(gradient(HEAT, t)))
-                } else {
-                    Span::styled("░", st((45, 50, 65)))
-                }
-            })
-            .collect()
+        bar_spans(frac, width, HEAT)
     }
 
     pub fn render(&mut self, s: &State, now: i64) -> String {
@@ -156,6 +258,8 @@ impl Renderer {
         // ---- progress line
         let counts = s.exec_counts();
         let mut progress: Vec<Span> = Vec::new();
+        // Set when a branch above already drew the featured download, so the server line does not repeat it.
+        let mut dl_shown = false;
         let mut progress_right: Vec<Span> = Vec::new();
         if aborting {
             let secs = (now - s.cancelled_ms.unwrap_or(now)) / 1000;
@@ -164,6 +268,11 @@ impl Renderer {
         } else if s.analysis_live() {
             progress.push(Span::styled("analysis ", st(MUTED)));
             progress.push(Span::raw(s.analysis.clone().unwrap_or_default()));
+            if let Some(dl) = download_spans(s, 24, 10, now) {
+                progress.push(Span::raw("  "));
+                progress.extend(dl);
+                dl_shown = true;
+            }
             if let Some((done, total)) = counts {
                 if total > 1 {
                     progress_right.push(Span::styled(format!("executing {}/{}", with_commas(done), with_commas(total)), st(MUTED)));
@@ -210,17 +319,31 @@ impl Renderer {
         } else if let (Some(l), false) = (&s.loading, s.analysis_done) {
             progress.push(Span::styled("loading ", st(MUTED)));
             progress.push(Span::raw(l.clone()));
-            if let Some(d) = &s.loading_detail {
+            if let Some(dl) = download_spans(s, 24, 10, now) {
+                progress.push(Span::raw("  "));
+                progress.extend(dl);
+                dl_shown = true;
+            } else if let Some(d) = &s.loading_detail {
                 progress.push(Span::styled(format!("  {}", d), dim()));
             }
         } else if let Some(a) = &s.analysis {
             progress.push(Span::styled("analysis ", st(MUTED)));
             progress.push(Span::raw(a.clone()));
-        } else if !s.fetches.is_empty() {
-            let (res, prog) = s.fetches.iter().next().unwrap();
+            if let Some(dl) = download_spans(s, 24, 10, now) {
+                progress.push(Span::raw("  "));
+                progress.extend(dl);
+                dl_shown = true;
+            }
+        } else if let Some((res, f)) = downloads(s).first().copied().or_else(|| s.fetches.iter().next()) {
+            dl_shown = true;
             progress.push(Span::styled(format!("fetching {} ", s.fetches.len()), st(MUTED)));
-            progress.push(Span::raw(short_label(res, 50)));
-            progress.push(Span::styled(format!("  {}", prog), dim()));
+            progress.push(Span::raw(fetch_label(res, 40)));
+            progress.push(Span::raw("  "));
+            if f.is_download() {
+                progress.extend(fetch_bar(f, 12, now));
+                progress.push(Span::raw(" "));
+            }
+            progress.extend(fetch_detail(f));
         } else if !s.activity.is_empty() {
             progress.push(Span::raw(s.activity.clone()));
         } else {
@@ -247,10 +370,22 @@ impl Renderer {
             server.push(Span::styled("  load ", st(MUTED)));
             server.push(Span::styled(format!("{:.1}/{}", s.load, s.cpus), st(gradient(HEAT, f))));
         }
-        if let Some((res, prog)) = s.fetches.iter().next() {
+        let dls = if dl_shown { Vec::new() } else { downloads(s) };
+        if let Some((res, f)) = dls.first() {
             server.push(Span::styled("  ↓ ", st(ACCENT)));
-            server.push(Span::raw(short_label(res, 30)));
-            server.push(Span::styled(format!(" {}", prog), dim()));
+            server.push(Span::raw(fetch_label(res, 24)));
+            server.push(Span::raw(" "));
+            server.extend(fetch_bar(f, 8, now));
+            if let Some(frac) = f.frac() {
+                server.push(Span::styled(format!(" {}%", (frac * 100.0) as u32), dim()));
+            }
+            if dls.len() > 1 {
+                server.push(Span::styled(format!(" +{}", dls.len() - 1), dim()));
+            }
+        } else if let Some((res, f)) = s.fetches.iter().next().filter(|_| !dl_shown) {
+            server.push(Span::styled("  ↓ ", st(ACCENT)));
+            server.push(Span::raw(fetch_label(res, 24)));
+            server.push(Span::styled(format!(" {}", f.progress.chars().take(30).collect::<String>()), dim()));
             if s.fetches.len() > 1 {
                 server.push(Span::styled(format!(" +{}", s.fetches.len() - 1), dim()));
             }
@@ -531,4 +666,49 @@ pub(crate) fn buffer_to_ansi(buf: &Buffer, rows: usize, color: bool) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod fetch_render_tests {
+    use super::{fetch_bar, fetch_detail};
+    use crate::state::Fetch;
+
+    fn text(spans: &[ratatui::text::Span]) -> String {
+        spans.iter().map(|s| s.content.to_string()).collect()
+    }
+
+    #[test]
+    fn detail_shares_the_unit_and_shows_percent_and_rate() {
+        let mut f = Fetch::default();
+        f.update(0, "", 10 << 20, 120 << 20);
+        f.update(2000, "", 37 << 20, 120 << 20);
+        let t = text(&fetch_detail(&f));
+        assert_eq!(t, " 30%  37/120 MiB  14 MiB/s", "{t}");
+        assert_eq!(text(&fetch_bar(&f, 10, 0)), "███▁░░░░░░");
+    }
+
+    #[test]
+    fn unknown_size_gets_bytes_and_a_moving_pulse() {
+        let mut f = Fetch::default();
+        f.update(0, "12 MiB", 12 << 20, 0);
+        assert_eq!(text(&fetch_detail(&f)), "  12 MiB");
+        assert_ne!(text(&fetch_bar(&f, 10, 0)), text(&fetch_bar(&f, 10, 300)));
+        assert_eq!(fetch_bar(&f, 10, 0).len(), 10);
+    }
+
+    #[test]
+    fn url_labels_keep_host_and_file_name() {
+        let url = "https://github.com/bazelbuild/bazel/releases/download/8.4.2/bazel-8.4.2-linux-x86_64";
+        assert_eq!(super::fetch_label(url, 50), "github.com …/bazel-8.4.2-linux-x86_64");
+        assert_eq!(super::fetch_label(url, 100), "github.com/bazelbuild/bazel/releases/download/8.4.2/bazel-8.4.2-linux-x86_64");
+        assert_eq!(super::fetch_label(url, 20), "…-8.4.2-linux-x86_64");
+        assert_eq!(super::fetch_label("repository @@foo", 40), "repository @@foo");
+    }
+
+    #[test]
+    fn repository_fetch_keeps_bazels_text() {
+        let mut f = Fetch::default();
+        f.update(0, "Fetching repository @@rules_go", 0, 0);
+        assert_eq!(text(&fetch_detail(&f)), "Fetching repository @@rules_go");
+    }
 }
