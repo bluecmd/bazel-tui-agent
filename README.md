@@ -17,7 +17,7 @@ The newest release is installed in
 `~/.local/share/bazel-tui-agent/` and a `startup` line is appended to
 `~/.bazelrc`. The next `bazel build` in a terminal shows the dashboard. 
 
-<img width="2880" height="1920" alt="image" src="https://github.com/user-attachments/assets/a9f6c598-47ba-4557-b18b-3ad5ede56267" />
+<img src="https://raw.githubusercontent.com/bluecmd/bazel-tui-agent/media/dashboard.png" alt="the dashboard during a build" width="100%">
 
 ## See it run
 
@@ -81,7 +81,7 @@ them; for `test`, an overview with failures first, failed cases and
 an interactive, fuzzy-matching finder over all commands and options (Enter
 prints the entry, Esc prints the usual usage text).
 
-Linux x86_64 only for the UI. One jar runs on Bazel 6.6 through 9.3.
+Linux x86_64 only for the UI. One jar runs on Bazel 6.6 through 10.0.0rc1.
 
 ## Build from source
 
