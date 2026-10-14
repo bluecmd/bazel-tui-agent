@@ -140,9 +140,11 @@ impl Terminal {
         self.help_mode = state.interactive_help() && self.pty.as_ref().map_or(false, |p| p.interactive()) && self.current_size().is_some();
     }
 
-    /// True while the help finder owns the screen; the Java side keeps polling until it is not.
-    pub fn busy(&self) -> bool {
-        self.help_mode && self.finder.is_some() && !self.help_done
+    /// True while the help finder owns the screen, or is about to (the index has arrived but no
+    /// poll has run yet: `help` is over in milliseconds, before the timer's first tick); the
+    /// Java side keeps polling until it is not.
+    pub fn busy(&self, state: &State) -> bool {
+        self.help_mode && !self.help_done && (self.finder.is_some() || !state.help.is_empty())
     }
 
     /// Keys typed at the client's terminal: `+`/`-` block height, `t` tree order, `l` big log.

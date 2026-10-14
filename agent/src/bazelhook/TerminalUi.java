@@ -84,6 +84,9 @@ final class TerminalUi {
    */
   void interact() {
     try {
+      // A poll first: the command may have ended before the timer's first tick, and it is the
+      // poll that opens the help finder once the index is there.
+      flush();
       while (!closed && Native.busy(handle) && !Thread.currentThread().isInterrupted()) {
         flush();
         Thread.sleep(20);

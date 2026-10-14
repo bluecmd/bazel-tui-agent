@@ -130,7 +130,7 @@ pub extern "system" fn Java_bazelhook_Native_finish(env: JNIEnv, _class: JClass,
 pub extern "system" fn Java_bazelhook_Native_busy(_env: JNIEnv, _class: JClass, handle: jlong) -> jboolean {
     let Some(m) = engine(handle) else { return 0 };
     match m.lock() {
-        Ok(e) => e.terminal.as_ref().map_or(false, |t| t.busy()) as jboolean,
+        Ok(e) => e.terminal.as_ref().map_or(false, |t| t.busy(&e.state)) as jboolean,
         Err(_) => 0,
     }
 }
