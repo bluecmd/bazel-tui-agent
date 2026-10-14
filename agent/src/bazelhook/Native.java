@@ -55,10 +55,11 @@ final class Native {
   // ---- the contract implemented in rust/src/lib.rs ----------------------------------------
 
   /**
-   * New engine. {@code ui} draws on a terminal of {@code width} columns; {@code clientPid} lets the
-   * engine find and use the client's terminal (0 = unknown); {@code trace} is a file path or "".
+   * New engine. {@code ui} draws on a terminal of {@code width} columns, in 24-bit colour when
+   * {@code truecolor}; {@code clientPid} lets the engine find and use the client's terminal (0 =
+   * unknown); {@code trace} is a file path or "".
    */
-  static native long create(boolean ui, int width, boolean color, int rows, long clientPid, String trace);
+  static native long create(boolean ui, int width, boolean color, boolean truecolor, int rows, long clientPid, String trace);
 
   /** One wire packet (see Packet). */
   static native boolean event(long handle, byte[] packet);

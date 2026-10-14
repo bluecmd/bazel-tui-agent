@@ -1,6 +1,7 @@
 //! Terminal output: Bazel-style message lines plus the status block, as bytes for the client's
 //! stderr (and stdout). The Java side only writes what `poll` and `finish` return.
 
+use crate::logview::LogLine;
 use crate::dashboard::Dashboard;
 use crate::events::Message;
 use crate::help::{self, Finder};
@@ -47,7 +48,7 @@ pub struct Terminal {
     last_frame: Vec<String>,
     /// Everything printed while on the alternate screen, replayed afterwards: (to stdout?, text).
     captured: Vec<(bool, Vec<u8>)>,
-    log_lines: Vec<String>,
+    log_lines: Vec<LogLine>,
     partial: String,
     /// Size reported by Bazel's own resize RPC (9.3+), used when the pty is not available.
     reported: Option<(u16, u16)>,
@@ -107,7 +108,7 @@ impl Terminal {
         for p in parts {
             let p = p.trim_end_matches('\r');
             let p = p.rsplit('\r').next().unwrap_or(p);
-            self.log_lines.push(p.to_string());
+            self.log_lines.push(LogLine::now(p.to_string()));
         }
         if self.log_lines.len() > 50_000 {
             self.log_lines.drain(..10_000);

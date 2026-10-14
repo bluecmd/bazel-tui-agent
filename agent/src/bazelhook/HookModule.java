@@ -51,7 +51,7 @@ public final class HookModule extends BlazeModule {
       } catch (NumberFormatException ignored) {
         // keep default
       }
-      handle = Native.create(wantUi, width, opts != null && opts.useColor(), rows, Agent.clientPid(), trace);
+      handle = Native.create(wantUi, width, opts != null && opts.useColor(), truecolor(clientEnv), rows, Agent.clientPid(), trace);
       if (wantUi) {
         // Silence UiEventHandler completely; the engine prints the messages itself.
         parse(env, "--noshow_progress", "--curses=no", "--ui_event_filters=");
@@ -156,6 +156,16 @@ public final class HookModule extends BlazeModule {
   }
 
   /** Same conditions under which Bazel itself would draw its curses progress bar. */
+  /** 24-bit colour: what COLORTERM in the client's environment says, BAZEL_HOOK_TRUECOLOR=0/1 overriding. */
+  private static boolean truecolor(Map<String, String> clientEnv) {
+    String force = clientEnv.get("BAZEL_HOOK_TRUECOLOR");
+    if (force != null) {
+      return "1".equals(force);
+    }
+    String ct = clientEnv.getOrDefault("COLORTERM", "");
+    return ct.equals("truecolor") || ct.equals("24bit");
+  }
+
   private static boolean wantsTerminalUi(CommandEnvironment env, Map<String, String> clientEnv) {
     if ("0".equals(clientEnv.get("BAZEL_HOOK_UI"))) {
       return false;

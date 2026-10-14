@@ -369,7 +369,7 @@ impl Finder {
             flush(&mut spans, &mut buf, buf_style);
             let mut line = Line::from(spans);
             if sel {
-                line = line.style(Style::new().bg(crate::render::rgb((40, 46, 66))));
+                line = line.style(Style::new().bg(crate::render::rgb((35, 60, 40))));
             }
             list_lines.push(line);
         }

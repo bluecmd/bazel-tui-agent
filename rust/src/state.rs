@@ -350,7 +350,9 @@ impl State {
             self.remote += 1;
         }
         *self.runners.entry(if runner.is_empty() { "?".into() } else { runner.to_string() }).or_insert(0) += 1;
-        if !host.is_empty() {
+        // Bazel fills the executor host name for local and sandboxed spawns too (the machine's
+        // own name), so only remote spawns count toward the hosts.
+        if remote && !host.is_empty() {
             *self.hosts.entry(host.to_string()).or_insert(0) += 1;
         }
         self.count_source(Source::of_spawn(runner, cache_hit, remote));
@@ -712,5 +714,35 @@ mod fetch_tests {
         f.update(11_000, "", 7 << 20, 0);
         assert_eq!(f.rate().map(|r| (r / (1 << 20) as f64).round()), Some(1.0));
         assert!(f.samples.len() <= 3);
+    }
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::State;
+    use crate::events::{Event, Stamped};
+
+    fn spawn(runner: &str, remote: bool, host: &str) -> Stamped {
+        Stamped {
+            t_ms: 1_000,
+            event: Event::Spawn {
+                id: "x".into(), mnemonic: "Genrule".into(), runner: runner.into(), runner_subtype: String::new(), host: host.into(),
+                status: "SUCCESS".into(), exit_code: 0, cache_hit: false, remote, wall_ms: 10,
+            },
+        }
+    }
+
+    #[test]
+    fn only_remote_spawns_count_as_hosts() {
+        let mut s = State::default();
+        // Bazel names the local machine as the executor host of local and sandboxed spawns.
+        s.apply(&spawn("linux-sandbox", false, "bastion"));
+        s.apply(&spawn("local", false, "bastion"));
+        assert!(s.hosts.is_empty());
+        s.apply(&spawn("remote", true, "worker-7"));
+        s.apply(&spawn("remote", true, "worker-7"));
+        s.apply(&spawn("remote", true, "worker-9"));
+        assert_eq!(s.hosts.len(), 2);
+        assert_eq!(s.hosts["worker-7"], 2);
     }
 }

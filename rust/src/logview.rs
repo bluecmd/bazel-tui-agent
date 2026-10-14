@@ -4,7 +4,9 @@
 //! panel follows the tail; the first scroll key pins a window, End or a PageDown past the end
 //! follows again. `/` types a query; matches are kept as line indices and extended as lines
 //! arrive, so a long build does not re-scan the log on every frame. Lines longer than the panel
-//! are cut, not wrapped; `←`/`→` shift the window sideways.
+//! are cut, not wrapped; `←`/`→` shift the window sideways. Each line carries the time it
+//! was captured, shown greyed on the left of the panels only (the replay into scrollback at
+//! the end is Bazel's bytes as they were).
 
 use ratatui::style::Style;
 use ratatui::text::Span;
@@ -12,7 +14,27 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::pty::Key;
 use crate::render::{bold, st};
-use crate::text::{TITLE, WARN};
+use crate::text::{fmt_clock, MUTED, TITLE, WARN};
+
+/// One captured line of Bazel's output and when it arrived.
+pub struct LogLine {
+    pub at_ms: i64,
+    pub text: String,
+}
+
+impl LogLine {
+    pub fn now(text: String) -> LogLine {
+        let at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+        LogLine { at_ms, text }
+    }
+    #[cfg(test)]
+    pub fn at(at_ms: i64, text: impl Into<String>) -> LogLine {
+        LogLine { at_ms, text: text.into() }
+    }
+}
+
+/// Width of the stamp column in the panels: `HH:MM:SS` and a space.
+pub const STAMP_W: u16 = 9;
 
 #[derive(Default)]
 pub struct LogView {
@@ -20,6 +42,8 @@ pub struct LogView {
     pub scroll: Option<usize>,
     /// First column shown, for lines wider than the panel.
     pub hscroll: usize,
+    /// Columns the panel gives the text, set by the last draw: how far sideways makes sense.
+    pub text_width: usize,
     pub query: String,
     /// `/` was pressed: keys edit the query until Enter or Esc.
     pub typing: bool,
@@ -45,7 +69,7 @@ const HSTEP: usize = 8;
 impl LogView {
     /// Keys while the log has the keyboard. Returns false for keys it does not use, so the
     /// caller can apply its own bindings.
-    pub fn key(&mut self, k: Key, log: &[String], height: usize) -> bool {
+    pub fn key(&mut self, k: Key, log: &[LogLine], height: usize) -> bool {
         let log_len = log.len();
         let page = height.max(1);
         if self.typing {
@@ -82,11 +106,11 @@ impl LogView {
             Key::PageDown | Key::Ctrl('f') => self.scroll_by(page as i64, log_len, height),
             Key::Left => self.hscroll = self.hscroll.saturating_sub(HSTEP),
             Key::Right => {
-                // No further than the widest line on screen minus a step, so something stays
-                // visible; a short window (the panel height) bounds the scan.
+                // No further than brings the end of the widest line on screen to the panel's
+                // right edge; a short window (the panel height) bounds the scan.
                 let w = self.window(log_len, height);
-                let widest = log[w.start..w.end].iter().map(|l| plain(l).width()).max().unwrap_or(0);
-                self.hscroll = (self.hscroll + HSTEP).min(widest.saturating_sub(HSTEP));
+                let widest = log[w.start..w.end].iter().map(|l| plain(&l.text).width()).max().unwrap_or(0);
+                self.hscroll = (self.hscroll + HSTEP).min(widest.saturating_sub(self.text_width));
             }
             Key::Home => self.scroll = Some(0),
             Key::End => self.scroll = None,
@@ -142,7 +166,7 @@ impl LogView {
     }
 
     /// Brings the matches up to date with lines that arrived since the last frame.
-    pub fn update(&mut self, log: &[String]) {
+    pub fn update(&mut self, log: &[LogLine]) {
         if self.needle.is_empty() {
             self.matches.clear();
             self.scanned = log.len();
@@ -155,7 +179,7 @@ impl LogView {
             self.current = None;
         }
         for (i, line) in log.iter().enumerate().skip(self.scanned) {
-            if plain(line).to_lowercase().contains(&self.needle) {
+            if plain(&line.text).to_lowercase().contains(&self.needle) {
                 self.matches.push(i);
             }
         }
@@ -223,6 +247,11 @@ impl LogView {
         out
     }
 
+    /// The greyed capture time of a line, for the stamp column.
+    pub fn stamp(line: &LogLine) -> Span<'static> {
+        Span::styled(format!("{} ", fmt_clock(line.at_ms)), st(MUTED))
+    }
+
     /// The hint row while the log has the keyboard.
     pub fn hint(&self) -> Vec<Span<'static>> {
         let mut v = Vec::new();
@@ -269,8 +298,8 @@ pub fn plain(line: &str) -> String {
 mod tests {
     use super::*;
 
-    fn log(n: usize) -> Vec<String> {
-        (0..n).map(|i| if i % 10 == 3 { format!("WARNING: line {} has a Warning", i) } else { format!("INFO: line {}", i) }).collect()
+    fn log(n: usize) -> Vec<LogLine> {
+        (0..n).map(|i| LogLine::at(1_000 * i as i64, if i % 10 == 3 { format!("WARNING: line {} has a Warning", i) } else { format!("INFO: line {}", i) })).collect()
     }
 
     #[test]
@@ -339,9 +368,9 @@ mod tests {
 
     #[test]
     fn sideways_scroll_is_bounded_by_the_widest_visible_line_and_reset_by_esc() {
-        let mut v = LogView::default();
+        let mut v = LogView { text_width: 20, ..LogView::default() };
         let mut l = log(20);
-        l[19] = format!("INFO: {}", "x".repeat(30));
+        l[19].text = format!("INFO: {}", "x".repeat(30));
         v.key(Key::Left, &l, 10);
         assert_eq!(v.hscroll, 0);
         v.key(Key::Right, &l, 10);
@@ -349,12 +378,12 @@ mod tests {
         for _ in 0..10 {
             v.key(Key::Right, &l, 10);
         }
-        // "INFO: " + 30 = 36 wide: the last step keeps 8 columns on screen.
-        assert_eq!(v.hscroll, 28);
+        // "INFO: " + 30 = 36 wide in a 20-column panel: the end of the line meets the edge.
+        assert_eq!(v.hscroll, 16);
         let w = v.window(l.len(), 10);
-        assert!(v.title(l.len(), &w).ends_with("col 29+  [l]"), "{}", v.title(l.len(), &w));
+        assert!(v.title(l.len(), &w).ends_with("col 17+  [l]"), "{}", v.title(l.len(), &w));
         v.key(Key::Left, &l, 10);
-        assert_eq!(v.hscroll, 20);
+        assert_eq!(v.hscroll, 8);
         v.key(Key::Esc, &l, 10);
         assert_eq!(v.hscroll, 0);
     }

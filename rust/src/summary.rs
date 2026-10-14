@@ -30,10 +30,10 @@ impl Sty {
         self.wrap("2", t)
     }
     pub fn rgb(&self, t: &str, c: (u8, u8, u8)) -> String {
-        self.wrap(&format!("38;5;{}", cube(c.0, c.1, c.2)), t)
+        self.wrap(&crate::text::color_code(38, c.0, c.1, c.2), t)
     }
     pub fn rgb_bold(&self, t: &str, c: (u8, u8, u8)) -> String {
-        self.wrap(&format!("38;5;{};1", cube(c.0, c.1, c.2)), t)
+        self.wrap(&format!("{};1", crate::text::color_code(38, c.0, c.1, c.2)), t)
     }
 }
 

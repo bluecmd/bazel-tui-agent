@@ -52,7 +52,8 @@ fn bytes(env: &JNIEnv, b: &[u8]) -> jbyteArray {
 /// `ui`: draw on the terminal (width/color/rows); `client_pid`: the Bazel client, whose terminal
 /// is used for size and keys when it can be found; `trace`: path of a JSON trace file or empty.
 #[no_mangle]
-pub extern "system" fn Java_bazelhook_Native_create(mut env: JNIEnv, _class: JClass, ui: jboolean, width: jint, color: jboolean, rows: jint, client_pid: jlong, trace: JString) -> jlong {
+pub extern "system" fn Java_bazelhook_Native_create(mut env: JNIEnv, _class: JClass, ui: jboolean, width: jint, color: jboolean, truecolor: jboolean, rows: jint, client_pid: jlong, trace: JString) -> jlong {
+    text::TRUECOLOR.store(truecolor != 0, std::sync::atomic::Ordering::Relaxed);
     let trace_path: String = env.get_string(&trace).map(|s| s.into()).unwrap_or_default();
     let e = Engine {
         state: State::default(),

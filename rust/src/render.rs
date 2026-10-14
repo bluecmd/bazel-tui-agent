@@ -18,15 +18,17 @@ use crate::summary::fmt_size;
 use crate::text::*;
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const BLOCKS: &[char] = &[' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
 pub(crate) fn rgb((r, g, b): (u8, u8, u8)) -> Color {
     Color::Rgb(r, g, b)
 }
 
-const BAR_EMPTY: (u8, u8, u8) = (45, 50, 65);
+/// Left-aligned eighth blocks for the cell a bar is filling.
+const LEFT_BLOCKS: &[char] = &[' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'];
 
-/// Gradient progress bar as spans, one cell each, with an eighth-block fractional cell.
+/// Gradient progress bar as spans, one cell each: a strip growing to the right over the
+/// terminal's own background, like the graphs, with no track behind it. The cell being filled
+/// is a left-aligned eighth block.
 pub(crate) fn bar_spans(frac: f64, width: usize, stops: &[(f32, (u8, u8, u8))]) -> Vec<Span<'static>> {
     let frac = frac.clamp(0.0, 1.0);
     let cells = frac * width as f64;
@@ -37,9 +39,9 @@ pub(crate) fn bar_spans(frac: f64, width: usize, stops: &[(f32, (u8, u8, u8))]) 
             if i < full {
                 Span::styled("█", st(gradient(stops, t)))
             } else if i == full && cells - full as f64 > 0.0 {
-                Span::styled(BLOCKS[(((cells - full as f64) * 8.0) as usize).clamp(1, 8)].to_string(), st(gradient(stops, t)))
+                Span::styled(LEFT_BLOCKS[(((cells - full as f64) * 8.0) as usize).clamp(1, 8)].to_string(), st(gradient(stops, t)))
             } else {
-                Span::styled("░", st(BAR_EMPTY))
+                Span::raw(" ")
             }
         })
         .collect()
@@ -56,7 +58,7 @@ pub(crate) fn pulse_spans(width: usize, now: i64, stops: &[(f32, (u8, u8, u8))])
             if (0..RUN).contains(&d) {
                 Span::styled("█", st(gradient(stops, 1.0 - d as f32 / RUN as f32)))
             } else {
-                Span::styled("░", st(BAR_EMPTY))
+                Span::raw(" ")
             }
         })
         .collect()
@@ -93,7 +95,7 @@ pub(crate) fn fetch_label(res: &str, width: usize) -> String {
 }
 
 /// The download to feature in a one-line view (the furthest along) with its bar and numbers:
-/// "↓ host …/file ████░░ 61%  37/61 MiB  6.0 MiB/s  +1 more". None without a download.
+/// "↓ host …/file ████   61%  37/61 MiB  6.0 MiB/s  +1 more". None without a download.
 /// The downloads in flight, the one to feature first: a known size beats an unknown one, then
 /// the most bytes so far.
 pub(crate) fn downloads(s: &State) -> Vec<(&String, &Fetch)> {
@@ -179,7 +181,7 @@ fn fetch_detail_with(f: &Fetch, aligned: bool) -> Vec<Span<'static>> {
 }
 
 /// Colour a finished action's text fades towards (a dark terminal's background, roughly).
-const FADE_TO: (u8, u8, u8) = (70, 75, 90);
+const FADE_TO: (u8, u8, u8) = (60, 80, 62);
 
 /// Milliseconds under a second, seconds with a decimal under ten, Bazel-style minutes above.
 fn fmt_took(ms: u64) -> String {
@@ -704,7 +706,7 @@ fn sgr(color: Color, bg: bool) -> Option<String> {
         Color::LightCyan => format!("{}", base + 66),
         Color::White => format!("{}", base + 67),
         Color::Indexed(i) => format!("{};5;{}", ext, i),
-        Color::Rgb(r, g, b) => format!("{};5;{}", ext, cube(r, g, b)),
+        Color::Rgb(r, g, b) => color_code(ext, r, g, b),
     })
 }
 
@@ -778,7 +780,7 @@ mod fetch_render_tests {
         f.update(2000, "", 37 << 20, 120 << 20);
         let t = text(&fetch_detail(&f));
         assert_eq!(t, " 30%  37/120 MiB  14 MiB/s", "{t}");
-        assert_eq!(text(&fetch_bar(&f, 10, 0)), "███▁░░░░░░");
+        assert_eq!(text(&fetch_bar(&f, 10, 0)), "███▏      ");
     }
 
     #[test]

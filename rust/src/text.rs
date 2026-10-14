@@ -2,6 +2,20 @@
 
 pub const RESET: &str = "\x1b[0m";
 
+/// Whether the client's terminal takes 24-bit colour (COLORTERM=truecolor); otherwise every
+/// colour is mapped to the 256-colour cube, six levels per channel, which turns the greens
+/// grey-ish and makes fades step.
+pub static TRUECOLOR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The SGR parameters for a colour: `ext` is 38 (foreground) or 48 (background).
+pub fn color_code(ext: u8, r: u8, g: u8, b: u8) -> String {
+    if TRUECOLOR.load(std::sync::atomic::Ordering::Relaxed) {
+        format!("{};2;{};{};{}", ext, r, g, b)
+    } else {
+        format!("{};5;{}", ext, cube(r, g, b))
+    }
+}
+
 pub fn cube(r: u8, g: u8, b: u8) -> u8 {
     let q = |v: u8| ((v as f32 / 255.0 * 5.0).round()) as u8;
     16 + 36 * q(r) + 6 * q(g) + q(b)
@@ -25,18 +39,22 @@ pub fn gradient(stops: &[(f32, (u8, u8, u8))], t: f32) -> (u8, u8, u8) {
     stops[stops.len() - 1].1
 }
 
-/// Download bars: blue to teal, distinct from the action heat scale.
-pub const DOWNLOAD: &[(f32, (u8, u8, u8))] = &[(0.0, (80, 140, 255)), (1.0, (80, 220, 200))];
-pub const HEAT: &[(f32, (u8, u8, u8))] = &[(0.0, (80, 160, 255)), (0.5, (90, 220, 120)), (0.8, (250, 200, 60)), (1.0, (255, 80, 80))];
-pub const COOL: &[(f32, (u8, u8, u8))] = &[(0.0, (60, 90, 160)), (1.0, (120, 200, 255))];
-pub const BORDER: (u8, u8, u8) = (90, 100, 130);
-pub const OK: (u8, u8, u8) = (90, 220, 120);
+// The base palette follows the Bazel icon's greens (#76D275 light, #43A047 regular, #00701A
+// dark) instead of the blue-grey it had: borders and muted text in a grey-green, the accent
+// the icon's light green, titles a pale green-white.
+/// Download bars: dark green to the icon's light green, distinct from the action heat scale.
+pub const DOWNLOAD: &[(f32, (u8, u8, u8))] = &[(0.0, (0, 112, 26)), (1.0, (118, 210, 117))];
+/// Load and parallelism: dark green through the icon's light green and amber to a coral top.
+pub const HEAT: &[(f32, (u8, u8, u8))] = &[(0.0, (40, 110, 60)), (0.5, (118, 210, 117)), (0.8, (240, 200, 90)), (1.0, (230, 125, 105))];
+pub const COOL: &[(f32, (u8, u8, u8))] = &[(0.0, (30, 90, 45)), (1.0, (118, 210, 117))];
+pub const BORDER: (u8, u8, u8) = (70, 105, 75);
+pub const OK: (u8, u8, u8) = (118, 230, 117);
 pub const BAD: (u8, u8, u8) = (255, 90, 90);
 pub const WARN: (u8, u8, u8) = (250, 200, 60);
 pub const ABORT: (u8, u8, u8) = (255, 140, 40);
-pub const ACCENT: (u8, u8, u8) = (140, 170, 255);
-pub const TITLE: (u8, u8, u8) = (170, 190, 230);
-pub const MUTED: (u8, u8, u8) = (130, 140, 160);
+pub const ACCENT: (u8, u8, u8) = (118, 210, 117);
+pub const TITLE: (u8, u8, u8) = (200, 225, 200);
+pub const MUTED: (u8, u8, u8) = (125, 150, 130);
 
 pub fn mnemonic_rgb(m: &str) -> (u8, u8, u8) {
     match m {
@@ -65,6 +83,14 @@ pub fn fmt_duration(secs: f64) -> String {
     } else {
         format!("{}h{:02}m", s / 3600, (s % 3600) / 60)
     }
+}
+
+/// Wall-clock `HH:MM:SS` in the local time zone, for the log panel's stamps.
+pub fn fmt_clock(ms: i64) -> String {
+    let t: libc::time_t = (ms / 1000) as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&t, &mut tm) };
+    format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
 }
 
 pub fn fmt_elapsed(secs: f64) -> String {

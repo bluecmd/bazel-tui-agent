@@ -68,7 +68,9 @@ build runs: `t` switches the tree order, `l` enlarges the log, Ctrl-C
 cancels. In the enlarged log, arrows and PgUp/PgDn scroll (Home for the
 top, End to follow the tail again), `←`/`→` shift long lines sideways, `/`
 types a search with matches highlighted as you type, `n`/`N` step to the
-newer/older match and Esc clears it. Actions that just finished stay listed under the running ones
+newer/older match and Esc clears it. Each line shows the time it arrived,
+greyed on the left; that is on screen only, the replay into scrollback at
+the end is Bazel's output as it was. Actions that just finished stay listed under the running ones
 for a few seconds, fading out, so a fast build still shows its work.
 `BAZEL_HOOK_UI=0` in the environment turns the UI off.
 
