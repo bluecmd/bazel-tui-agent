@@ -145,8 +145,14 @@ impl Terminal {
     }
 
     /// Keys typed at the client's terminal: `+`/`-` block height, `t` tree order, `l` big log.
+    /// With the big log up, the log view takes scrolling and search keys first.
     fn handle_keys(&mut self, keys: Vec<Key>) {
         for k in keys {
+            if let Some(d) = self.dashboard.as_mut() {
+                if (d.show_log_big || d.log.typing) && d.log.key(k, &self.log_lines, d.log_height) {
+                    continue;
+                }
+            }
             match k {
                 Key::Char('+') | Key::Char('=') => self.renderer.adjust_rows(1),
                 Key::Char('-') | Key::Char('_') => self.renderer.adjust_rows(-1),

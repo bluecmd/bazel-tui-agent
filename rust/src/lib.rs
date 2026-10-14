@@ -9,6 +9,7 @@
 mod dashboard;
 mod events;
 mod help;
+mod logview;
 mod pty;
 mod render;
 mod state;

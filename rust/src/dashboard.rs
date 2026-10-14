@@ -10,7 +10,8 @@ use ratatui::widgets::{Bar, BarChart, BarGroup, Block, BorderType, Borders, Para
 use ratatui::Terminal;
 use unicode_width::UnicodeWidthStr;
 
-use crate::render::{bar_spans, buffer_to_ansi, download_spans_fitting, fetch_bar, fetch_detail, fetch_detail_aligned, fetch_label, st, bold, dim, sparkline_levels};
+use crate::render::{bar_spans, buffer_to_ansi, download_spans_fitting, fetch_bar, fetch_detail, fetch_detail_aligned, fetch_label, finished_row, st, bold, dim, sparkline_levels};
+use crate::logview::{plain, LogView};
 use crate::state::{ActState, Node, Source, State};
 use crate::text::*;
 
@@ -23,6 +24,10 @@ pub struct Dashboard {
     tick: usize,
     pub show_log_big: bool,
     pub tree_by_size: bool,
+    /// Scroll position and search of the log panel.
+    pub log: LogView,
+    /// Rows the log panel had on the last frame, for page-sized scrolling.
+    pub log_height: usize,
     term: Terminal<TestBackend>,
 }
 
@@ -55,7 +60,7 @@ fn line_width(spans: &[Span]) -> usize {
 
 impl Dashboard {
     pub fn new(cols: u16, rows: u16, color: bool) -> Dashboard {
-        Dashboard { cols, rows, color, tick: 0, show_log_big: false, tree_by_size: false, term: Terminal::new(TestBackend::new(cols, rows)).expect("backend") }
+        Dashboard { cols, rows, color, tick: 0, show_log_big: false, tree_by_size: false, log: LogView::default(), log_height: 1, term: Terminal::new(TestBackend::new(cols, rows)).expect("backend") }
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) {
@@ -304,6 +309,8 @@ impl Dashboard {
             ];
             running_lines.push((left, right));
         }
+        // What just finished follows the live rows, fading; the draw step takes as many as fit.
+        let finished_lines: Vec<(Vec<Span>, Vec<Span>)> = s.recent_finished(now).into_iter().map(|f| finished_row(f, now, true)).collect();
 
         // ---- mnemonics and runners content
         let mut items: Vec<(&String, &(u64, u64))> = s.mnemonic_stats.iter().collect();
@@ -314,9 +321,11 @@ impl Dashboard {
 
         // ---- layout
         let tree_mode = self.tree_by_size;
-        let color = self.color;
         let total_rows = self.rows as usize;
         let log_big = self.show_log_big;
+        let logv = &mut self.log;
+        logv.update(log);
+        let log_height = &mut self.log_height;
         self.term
             .draw(|f| {
                 let area = f.area();
@@ -379,11 +388,12 @@ impl Dashboard {
 
                 // middle: running + tree, or the big log
                 if log_big {
-                    let lb = panel("log", &format!("{} lines  [l]", log.len()));
-                    let li = lb.inner(rows_c[2]);
-                    f.render_widget(lb, rows_c[2]);
-                    let tail: Vec<Line> = log.iter().rev().take(li.height as usize).rev().map(|l| Line::from(ansi_spans(l, color))).collect();
-                    f.render_widget(Paragraph::new(tail), li);
+                    let li = panel("log", "").inner(rows_c[2]);
+                    let w = logv.window(log.len(), li.height as usize);
+                    *log_height = li.height as usize;
+                    f.render_widget(panel("log", &logv.title(log.len(), &w)), rows_c[2]);
+                    let lines: Vec<Line> = log[w.start..w.end].iter().map(|l| Line::from(log_spans(logv, l))).collect();
+                    f.render_widget(Paragraph::new(lines), li);
                 } else {
                     let tree_w = ((area.width as f32 * 0.4) as u16).max(34);
                     let ms = Layout::horizontal([Constraint::Fill(1), Constraint::Length(tree_w)]).split(rows_c[2]);
@@ -396,7 +406,8 @@ impl Dashboard {
                     f.render_widget(rb, ms[0]);
                     let rrows = Layout::vertical(vec![Constraint::Length(1); ri.height as usize]).split(ri);
                     let shown = running_lines.len().min(ri.height as usize);
-                    for (i, (left, right)) in running_lines.iter().take(shown).enumerate() {
+                    let rows: Vec<&(Vec<Span>, Vec<Span>)> = running_lines.iter().take(shown).chain(finished_lines.iter().take((ri.height as usize).saturating_sub(shown))).collect();
+                    for (i, (left, right)) in rows.into_iter().enumerate() {
                         if i + 1 == shown && running_lines.len() > shown {
                             f.render_widget(Paragraph::new(Span::styled(format!("   … and {} more", running_lines.len() - shown + 1), st(MUTED))), rrows[i]);
                             break;
@@ -440,19 +451,26 @@ impl Dashboard {
                     let ci = cb.inner(bs[1]);
                     f.render_widget(cb, bs[1]);
                     f.render_widget(Paragraph::new(cache_lines(s, &runners, ci.width as usize, ci.height as usize)), ci);
-                    let lb = panel("log", &format!("{} lines  [l]", log.len()));
-                    let li = lb.inner(bs[2]);
-                    f.render_widget(lb, bs[2]);
-                    let tail: Vec<Line> = log.iter().rev().take(li.height as usize).rev().map(|l| Line::from(ansi_spans(l, color))).collect();
-                    f.render_widget(Paragraph::new(tail), li);
+                    let li = panel("log", "").inner(bs[2]);
+                    let w = logv.window(log.len(), li.height as usize);
+                    if !log_big {
+                        *log_height = li.height as usize;
+                    }
+                    f.render_widget(panel("log", &logv.title(log.len(), &w)), bs[2]);
+                    let lines: Vec<Line> = log[w.start..w.end].iter().map(|l| Line::from(log_spans(logv, l))).collect();
+                    f.render_widget(Paragraph::new(lines), li);
                 }
 
                 // hint
-                let hint = Line::from(vec![
-                    Span::styled(" t ", bold(ACCENT)), Span::styled("tree order  ", st(MUTED)),
-                    Span::styled(" l ", bold(ACCENT)), Span::styled("log  ", st(MUTED)),
-                    Span::styled(" ^C ", bold(ACCENT)), Span::styled("cancel", st(MUTED)),
-                ]);
+                let hint = if log_big {
+                    Line::from(logv.hint())
+                } else {
+                    Line::from(vec![
+                        Span::styled(" t ", bold(ACCENT)), Span::styled("tree order  ", st(MUTED)),
+                        Span::styled(" l ", bold(ACCENT)), Span::styled("log  ", st(MUTED)),
+                        Span::styled(" ^C ", bold(ACCENT)), Span::styled("cancel", st(MUTED)),
+                    ])
+                };
                 f.render_widget(Paragraph::new(hint), rows_c[4]);
             })
             .ok();
@@ -611,23 +629,9 @@ fn cache_lines(s: &State, local_runners: &[(&String, &u64)], width: usize, heigh
     lines
 }
 
-/// Strips ANSI escapes from a captured log line (the panel applies its own styling).
-fn ansi_spans(line: &str, _color: bool) -> Vec<Span<'static>> {
-    let mut out = String::new();
-    let mut in_esc = false;
-    for c in line.chars() {
-        if in_esc {
-            if c == 'm' {
-                in_esc = false;
-            }
-            continue;
-        }
-        if c == '\x1b' {
-            in_esc = true;
-            continue;
-        }
-        out.push(c);
-    }
+/// A captured log line without its ANSI escapes, styled by its kind, search matches highlighted.
+fn log_spans(logv: &LogView, line: &str) -> Vec<Span<'static>> {
+    let out = plain(line);
     let style = if out.starts_with("ERROR:") {
         bold(BAD)
     } else if out.starts_with("WARNING:") {
@@ -637,7 +641,7 @@ fn ansi_spans(line: &str, _color: bool) -> Vec<Span<'static>> {
     } else {
         Style::new()
     };
-    vec![Span::styled(out, style)]
+    logv.spans(line, style)
 }
 
 /// The tree panel: repositories/packages with live and recently finished actions, most active first.
@@ -794,6 +798,60 @@ mod tests {
             let inline = r.render(&s, t + 2000);
             assert!(inline.contains("14/77 MiB"), "{cols}: {inline}");
         }
+    }
+
+    #[test]
+    fn finished_actions_linger_and_fade_in_both_renderers() {
+        let mut s = synthetic();
+        let t = 1_100_000i64;
+        s.apply(&Stamped { t_ms: t, event: Event::Phase { phase: crate::events::Phase::Execution } });
+        let quick = ActionRef { id: "q".into(), mnemonic: "Genrule".into(), label: "//pkg:quick".into(), description: "Executing genrule //pkg:quick".into(), ..Default::default() };
+        let hit = ActionRef { id: "h".into(), mnemonic: "CppCompile".into(), label: "//pkg:hit".into(), description: "Compiling hit.cc".into(), ..Default::default() };
+        s.apply(&Stamped { t_ms: t, event: Event::ActionRunning { action: quick.clone(), strategy: "linux-sandbox".into() } });
+        s.apply(&Stamped { t_ms: t + 700, event: Event::ActionCompleted { action: quick, start_ns: 0, finish_ns: 0 } });
+        s.apply(&Stamped { t_ms: t + 800, event: Event::ActionCached { action: hit } });
+        assert_eq!(s.recent_finished(t + 900).len(), 2);
+        assert_eq!(s.recent_finished(t + 900)[0].how, crate::state::Finish::Cached);
+        assert_eq!(s.recent_finished(t + 900)[1].took_ms, Some(700));
+        let mut d = Dashboard::new(120, 36, false);
+        let text = d.render(&s, &[], t + 900).join("\n");
+        assert!(text.contains("✓ Genrule") && text.contains("linux-sandbox") && text.contains("700ms"), "{}", text);
+        assert!(text.contains("≡ CppCompile") && text.contains("cached"), "{}", text);
+        let mut r = crate::render::Renderer::new(120, false, 12);
+        let inline = r.render(&s, t + 900);
+        assert!(inline.contains("✓ Genrule") && inline.contains("≡ CppCompile"), "{}", inline);
+        // Gone once the fade time is over, and pruned from the state on the next sample.
+        let later = t + 800 + crate::state::FADE_MS;
+        assert!(s.recent_finished(later).is_empty());
+        assert!(!d.render(&s, &[], later).join("\n").contains("Genrule //pkg:quick"));
+        s.sample(later);
+        assert!(s.recent.is_empty());
+    }
+
+    #[test]
+    fn big_log_scrolls_and_shows_the_search_in_title_and_hint() {
+        let s = synthetic();
+        let log: Vec<String> = (0..200).map(|i| if i % 50 == 7 { format!("WARNING: line {} needle", i) } else { format!("INFO: line {}", i) }).collect();
+        let mut d = Dashboard::new(120, 40, false);
+        d.show_log_big = true;
+        let text = d.render(&s, &log, 1_100_000).join("\n");
+        assert!(text.contains("INFO: line 199") && text.contains("200 lines  [l]"), "{}", text);
+        assert!(text.contains("PgUp PgDn"), "{}", text);
+        d.log.key(crate::pty::Key::PageUp, &log, d.log_height);
+        let text = d.render(&s, &log, 1_100_000).join("\n");
+        assert!(!text.contains("INFO: line 199") && text.contains(" of 200 lines"), "{}", text);
+        for k in "/needle".chars() {
+            d.log.key(crate::pty::Key::Char(k), &log, d.log_height);
+            d.render(&s, &log, 1_100_000);
+        }
+        d.log.key(crate::pty::Key::Enter, &log, d.log_height);
+        let text = d.render(&s, &log, 1_100_000).join("\n");
+        assert!(text.contains("/needle  4/4 matches") && text.contains("WARNING: line 157 needle"), "{}", text);
+        assert!(text.contains("newer / older match"), "{}", text);
+        // The small panel keeps the search too.
+        d.show_log_big = false;
+        let text = d.render(&s, &log, 1_100_000).join("\n");
+        assert!(text.contains("4/4 matches"), "{}", text);
     }
 
     #[test]

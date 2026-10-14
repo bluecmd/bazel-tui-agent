@@ -13,7 +13,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Sparkline};
 use ratatui::Terminal;
 use unicode_width::UnicodeWidthStr;
 
-use crate::state::{ActState, Fetch, Source, State};
+use crate::state::{ActState, Fetch, Finish, Finished, Source, State, FADE_MS};
 use crate::summary::fmt_size;
 use crate::text::*;
 
@@ -176,6 +176,51 @@ fn fetch_detail_with(f: &Fetch, aligned: bool) -> Vec<Span<'static>> {
         }
     }
     out
+}
+
+/// Colour a finished action's text fades towards (a dark terminal's background, roughly).
+const FADE_TO: (u8, u8, u8) = (70, 75, 90);
+
+/// Milliseconds under a second, seconds with a decimal under ten, Bazel-style minutes above.
+fn fmt_took(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{}ms", ms)
+    } else if ms < 10_000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        fmt_duration(ms as f64 / 1000.0)
+    }
+}
+
+/// One row of a running panel for an action that just finished: mark, mnemonic and description
+/// on the left, how it ended and how long it ran on the right, every colour faded by its age.
+pub(crate) fn finished_row(f: &Finished, now: i64, indent: bool) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
+    let t = ((now - f.done_ms).max(0) as f32 / FADE_MS as f32).clamp(0.0, 1.0);
+    let fade = |c: (u8, u8, u8)| st(lerp(c, FADE_TO, t));
+    let (mark, how) = match f.how {
+        Finish::Done => ("✓ ", if f.strategy.is_empty() { "done".to_string() } else { f.strategy.clone() }),
+        Finish::Cached => ("≡ ", "cached".to_string()),
+        Finish::Failed => ("✗ ", "FAILED".to_string()),
+    };
+    let mark_rgb = match f.how { Finish::Failed => BAD, Finish::Cached => MUTED, Finish::Done => OK };
+    let desc = f.desc.strip_prefix(&format!("{} ", f.mnemonic)).unwrap_or(&f.desc);
+    let body = if !f.label.is_empty() && desc.contains(&f.label) {
+        desc.replacen(&f.label, &short_label(&f.label, 48), 1)
+    } else {
+        format!("{:<30}  {}", short_label(&f.label, 30), desc)
+    };
+    let mut left = Vec::new();
+    if indent {
+        left.push(Span::raw(" "));
+    }
+    left.push(Span::styled(mark, fade(mark_rgb)));
+    left.push(Span::styled(format!("{:<11} ", f.mnemonic.chars().take(11).collect::<String>()), fade(mnemonic_rgb(&f.mnemonic))));
+    left.push(Span::styled(body, fade((200, 205, 215))));
+    let right = vec![
+        Span::styled(format!("{:>16} ", how.chars().take(16).collect::<String>()), fade(if f.how == Finish::Failed { BAD } else { MUTED })),
+        Span::styled(format!("{:>6}", f.took_ms.map(fmt_took).unwrap_or_default()), fade(MUTED)),
+    ];
+    (left, right)
 }
 
 pub(crate) fn st(c: (u8, u8, u8)) -> Style {
@@ -487,6 +532,10 @@ impl Renderer {
         if more > 0 && !running_rows.is_empty() {
             let last = running_rows.len() - 1;
             running_rows[last] = (vec![Span::styled(format!("  … and {} more in flight", more + 1), st(MUTED))], vec![]);
+        }
+        // Rows left over go to what just finished, fading out.
+        for f in s.recent_finished(now).into_iter().take(budget.saturating_sub(running_rows.len())) {
+            running_rows.push(finished_row(f, now, false));
         }
 
         let mut tree: Vec<Line> = Vec::new();

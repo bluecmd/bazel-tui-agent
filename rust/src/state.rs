@@ -78,6 +78,32 @@ pub struct Action {
     pub progress: Option<String>,
 }
 
+/// How an action left the running list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Finish {
+    Done,
+    Cached,
+    Failed,
+}
+
+/// An action that finished a moment ago. The running panels keep showing these, fading, for
+/// `FADE_MS`: on a fast build most actions are over before a frame is drawn, and this is the
+/// only way to see them go by.
+pub struct Finished {
+    pub label: String,
+    pub mnemonic: String,
+    pub desc: String,
+    pub strategy: String,
+    pub how: Finish,
+    pub done_ms: i64,
+    /// Wall time the action ran, when it was seen running.
+    pub took_ms: Option<u64>,
+}
+
+/// How long a finished action stays visible, fading out.
+pub const FADE_MS: i64 = 4000;
+const RECENT_MAX: usize = 200;
+
 #[derive(Default)]
 pub struct Node {
     pub children: BTreeMap<String, Node>,
@@ -177,6 +203,8 @@ pub struct State {
     pub activity: String,
     pub fetches: BTreeMap<String, Fetch>,
     pub actions: HashMap<String, Action>,
+    /// Actions that finished within the last `FADE_MS`, oldest first.
+    pub recent: VecDeque<Finished>,
     pub completed: u64,
     pub failed_actions: u64,
     pub peak_running: u64,
@@ -296,6 +324,22 @@ impl State {
         }
     }
 
+    fn finished(&mut self, a: &ActionRef, prior: Option<&Action>, how: Finish, now: i64) {
+        let (label, mnemonic, desc, strategy, took_ms) = match prior {
+            Some(p) => (p.label.clone(), p.mnemonic.clone(), p.desc.clone(), p.strategy.clone(), if p.state == ActState::Run { Some((now - p.t_ms).max(0) as u64) } else { None }),
+            None => (a.label.clone(), a.mnemonic.clone(), a.description.clone(), String::new(), None),
+        };
+        self.recent.push_back(Finished { label, mnemonic, desc, strategy, how, done_ms: now, took_ms });
+        while self.recent.len() > RECENT_MAX {
+            self.recent.pop_front();
+        }
+    }
+
+    /// Recently finished actions, newest first, still within their fade time.
+    pub fn recent_finished(&self, now: i64) -> Vec<&Finished> {
+        self.recent.iter().rev().take_while(|f| now - f.done_ms < FADE_MS).collect()
+    }
+
     /// One spawn (executed or served from a cache) for the counters and the source breakdown.
     fn count_spawn(&mut self, runner: &str, cache_hit: bool, remote: bool, host: &str) {
         self.spawns += 1;
@@ -390,10 +434,17 @@ impl State {
                 if !success {
                     self.failed_actions += 1;
                     self.touch(&action.label, now, 0, 0, 1);
+                    let prior = self.actions.remove(&action.id);
+                    if prior.as_ref().map_or(false, |p| p.state == ActState::Run) {
+                        self.touch(&action.label, now, -1, 0, 0);
+                    }
+                    self.leaf(&action.label).action_ids.remove(&action.id);
+                    self.finished(action, prior.as_ref(), Finish::Failed, now);
                 }
             }
             Event::ActionCompleted { action, .. } => {
                 let a = self.actions.remove(&action.id);
+                self.finished(action, a.as_ref(), Finish::Done, now);
                 self.completed += 1;
                 let (label, was_running, dur) = match &a {
                     Some(a) => (a.label.clone(), a.state == ActState::Run, (now - a.t_ms).max(0) as u64),
@@ -460,7 +511,10 @@ impl State {
                     boolean_syntax: *boolean_syntax,
                 }))
             }
-            Event::ActionCached { .. } => self.count_source(Source::ActionCache),
+            Event::ActionCached { action } => {
+                self.count_source(Source::ActionCache);
+                self.finished(action, None, Finish::Cached, now);
+            }
             Event::Cancelled => {
                 if self.cancelled_ms.is_none() {
                     self.cancelled_ms = Some(now);
@@ -517,6 +571,9 @@ impl State {
             return;
         }
         self.last_sample_ms = now;
+        while self.recent.front().map_or(false, |f| now - f.done_ms >= FADE_MS) {
+            self.recent.pop_front();
+        }
         let running = self.actions.values().filter(|a| a.state == ActState::Run).count() as u32;
         self.history_running.push(running);
         if now - self.tp_last.0 >= 1000 {
