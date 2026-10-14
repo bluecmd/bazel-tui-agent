@@ -282,8 +282,9 @@ impl Dashboard {
 
         // ---- server panel content (heap and load; the cache has its own panel below)
         let mut server: Vec<Line> = Vec::new();
-        // Each bar takes what its label and numbers leave of the panel's inner width.
-        let sw = (self.cols as usize / 4).clamp(30, 40) - 2;
+        // Each bar takes what its label and numbers leave of the panel's inner width, less a
+        // column between the numbers and the border.
+        let sw = (self.cols as usize / 4).clamp(30, 40) - 3;
         if s.heap_max_mb > 0 {
             let num = format!(" {:.1}/{}G", s.heap_used_mb as f64 / 1024.0, s.heap_max_mb / 1024);
             let mut l = vec![Span::styled("heap ", st(MUTED))];
