@@ -54,6 +54,22 @@ final class Reflect {
     return null;
   }
 
+  /**
+   * An option's value by its field name, whichever way this release exposes it: Bazel 10 made the
+   * options classes abstract with getters ({@code getIsATty()}, {@code getTerminalColumns()}),
+   * earlier releases have public fields ({@code isATty}, {@code terminalColumns}).
+   */
+  static Object option(Object opts, String name) {
+    if (opts == null) {
+      return null;
+    }
+    String cap = Character.toUpperCase(name.charAt(0)) + name.substring(1);
+    if (find(opts.getClass(), "get" + cap) != null) {
+      return call(opts, "get" + cap);
+    }
+    return field(opts, name);
+  }
+
   static String str(Object target, String... names) {
     Object v = call(target, names);
     return v == null ? null : v.toString();

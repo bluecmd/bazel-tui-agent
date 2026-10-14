@@ -125,14 +125,14 @@ final class EventForwarder implements EventHandler {
   /** Bazel's --show_result threshold, or -1 for commands without it. */
   private static long showResult(CommandEnvironment env) {
     Object o = options(env, "com.google.devtools.build.lib.buildtool.BuildRequestOptions");
-    Object v = o == null ? null : Reflect.field(o, "maxResultTargets");
+    Object v = Reflect.option(o, "maxResultTargets");
     return v instanceof Number ? ((Number) v).longValue() : -1;
   }
 
   /** Bazel's --test_summary format in lower case ("short", "terse", ...), or "". */
   private static String testSummary(CommandEnvironment env) {
     Object o = options(env, "com.google.devtools.build.lib.exec.ExecutionOptions");
-    Object v = o == null ? null : Reflect.field(o, "testSummary");
+    Object v = Reflect.option(o, "testSummary");
     return v == null ? "" : v.toString().toLowerCase(java.util.Locale.ROOT);
   }
 
@@ -389,7 +389,8 @@ final class EventForwarder implements EventHandler {
           .list(ev.getPassedLogs())
           .list(failedCases)
           .i64(ev.getNumAttempts())
-          .bool(ev.wasUnreportedWrongSize());
+          // Gone in Bazel 10.
+          .bool(Boolean.TRUE.equals(Reflect.call(ev, "wasUnreportedWrongSize")));
     });
     on(LIB + "buildtool.buildevent.BuildCompleteEvent", e -> {
       BuildCompleteEvent ev = (BuildCompleteEvent) e;

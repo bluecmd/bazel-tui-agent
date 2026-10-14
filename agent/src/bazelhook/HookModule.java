@@ -44,7 +44,8 @@ public final class HookModule extends BlazeModule {
         return;
       }
       UiOptions opts = env.getOptions().getOptions(UiOptions.class);
-      int width = opts != null && opts.terminalColumns > 0 ? opts.terminalColumns : 80;
+      Object columns = Reflect.option(opts, "terminalColumns");
+      int width = columns instanceof Number && ((Number) columns).intValue() > 0 ? ((Number) columns).intValue() : 80;
       int rows = 12;
       try {
         rows = Integer.parseInt(clientEnv.getOrDefault("BAZEL_HOOK_ROWS", "12"));
@@ -171,7 +172,10 @@ public final class HookModule extends BlazeModule {
       return false;
     }
     UiOptions opts = env.getOptions().getOptions(UiOptions.class);
-    return opts != null && opts.isATty && opts.showProgress && opts.useCursesEnum != UiOptions.UseCurses.NO;
+    Object curses = Reflect.option(opts, "useCursesEnum");
+    return Boolean.TRUE.equals(Reflect.option(opts, "isATty"))
+        && Boolean.TRUE.equals(Reflect.option(opts, "showProgress"))
+        && (curses == null || !"NO".equals(curses.toString()));
   }
 
   /**
