@@ -393,7 +393,7 @@ impl Dashboard {
                     *log_height = li.height as usize;
                     f.render_widget(panel("log", &logv.title(log.len(), &w)), rows_c[2]);
                     let lines: Vec<Line> = log[w.start..w.end].iter().map(|l| Line::from(log_spans(logv, l))).collect();
-                    f.render_widget(Paragraph::new(lines), li);
+                    f.render_widget(Paragraph::new(lines).scroll((0, logv.hscroll as u16)), li);
                 } else {
                     let tree_w = ((area.width as f32 * 0.4) as u16).max(34);
                     let ms = Layout::horizontal([Constraint::Fill(1), Constraint::Length(tree_w)]).split(rows_c[2]);
@@ -458,7 +458,7 @@ impl Dashboard {
                     }
                     f.render_widget(panel("log", &logv.title(log.len(), &w)), bs[2]);
                     let lines: Vec<Line> = log[w.start..w.end].iter().map(|l| Line::from(log_spans(logv, l))).collect();
-                    f.render_widget(Paragraph::new(lines), li);
+                    f.render_widget(Paragraph::new(lines).scroll((0, logv.hscroll as u16)), li);
                 }
 
                 // hint
@@ -852,6 +852,17 @@ mod tests {
         d.show_log_big = false;
         let text = d.render(&s, &log, 1_100_000).join("\n");
         assert!(text.contains("4/4 matches"), "{}", text);
+        // Sideways: the window shifts over the long lines; the title says where.
+        d.show_log_big = true;
+        let wide: Vec<String> = (0..5).map(|i| format!("INFO: line {} {}", i, "0123456789".repeat(20))).collect();
+        d.log.key(crate::pty::Key::Esc, &wide, d.log_height);
+        d.log.key(crate::pty::Key::Right, &wide, d.log_height);
+        d.log.key(crate::pty::Key::Right, &wide, d.log_height);
+        let text = d.render(&s, &wide, 1_100_000).join("\n");
+        assert!(!text.contains("INFO: line 4") && text.contains("col 17+") && text.contains("5678901234567890123"), "{}", text);
+        d.log.key(crate::pty::Key::Esc, &wide, d.log_height);
+        let text = d.render(&s, &wide, 1_100_000).join("\n");
+        assert!(text.contains("INFO: line 4"), "{}", text);
     }
 
     #[test]

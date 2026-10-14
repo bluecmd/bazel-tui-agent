@@ -3,10 +3,12 @@
 //! The log is the list of lines Bazel printed so far (`Terminal::log_lines`). By default the
 //! panel follows the tail; the first scroll key pins a window, End or a PageDown past the end
 //! follows again. `/` types a query; matches are kept as line indices and extended as lines
-//! arrive, so a long build does not re-scan the log on every frame.
+//! arrive, so a long build does not re-scan the log on every frame. Lines longer than the panel
+//! are cut, not wrapped; `←`/`→` shift the window sideways.
 
 use ratatui::style::Style;
 use ratatui::text::Span;
+use unicode_width::UnicodeWidthStr;
 
 use crate::pty::Key;
 use crate::render::{bold, st};
@@ -16,6 +18,8 @@ use crate::text::{TITLE, WARN};
 pub struct LogView {
     /// First line shown; `None` follows the tail.
     pub scroll: Option<usize>,
+    /// First column shown, for lines wider than the panel.
+    pub hscroll: usize,
     pub query: String,
     /// `/` was pressed: keys edit the query until Enter or Esc.
     pub typing: bool,
@@ -34,6 +38,9 @@ pub struct Window {
     pub start: usize,
     pub end: usize,
 }
+
+/// How far `←`/`→` move.
+const HSTEP: usize = 8;
 
 impl LogView {
     /// Keys while the log has the keyboard. Returns false for keys it does not use, so the
@@ -73,6 +80,14 @@ impl LogView {
             Key::Down | Key::Ctrl('n') | Key::Char('j') => self.scroll_by(1, log_len, height),
             Key::PageUp | Key::Ctrl('b') => self.scroll_by(-(page as i64), log_len, height),
             Key::PageDown | Key::Ctrl('f') => self.scroll_by(page as i64, log_len, height),
+            Key::Left => self.hscroll = self.hscroll.saturating_sub(HSTEP),
+            Key::Right => {
+                // No further than the widest line on screen minus a step, so something stays
+                // visible; a short window (the panel height) bounds the scan.
+                let w = self.window(log_len, height);
+                let widest = log[w.start..w.end].iter().map(|l| plain(l).width()).max().unwrap_or(0);
+                self.hscroll = (self.hscroll + HSTEP).min(widest.saturating_sub(HSTEP));
+            }
             Key::Home => self.scroll = Some(0),
             Key::End => self.scroll = None,
             Key::Char('n') if !self.query.is_empty() => self.step(1, log_len, height),
@@ -82,7 +97,10 @@ impl LogView {
                 self.rescan();
                 self.update(log);
             }
-            Key::Esc => self.scroll = None,
+            Key::Esc => {
+                self.scroll = None;
+                self.hscroll = 0;
+            }
             _ => return false,
         }
         true
@@ -164,10 +182,14 @@ impl LogView {
             t.push_str(&format!("/{}  {}{} matches  ", self.query, pos, self.matches.len()));
         }
         if self.scroll.is_some() && log_len > 0 {
-            t.push_str(&format!("{}-{} of {} lines  [l]", w.start + 1, w.end, log_len));
+            t.push_str(&format!("{}-{} of {} lines", w.start + 1, w.end, log_len));
         } else {
-            t.push_str(&format!("{} lines  [l]", log_len));
+            t.push_str(&format!("{} lines", log_len));
         }
+        if self.hscroll > 0 {
+            t.push_str(&format!("  col {}+", self.hscroll + 1));
+        }
+        t.push_str("  [l]");
         t
     }
 
@@ -211,9 +233,9 @@ impl LogView {
             return v;
         }
         let items: &[(&str, &str)] = if self.query.is_empty() {
-            &[("↑↓ PgUp PgDn", "scroll  "), ("Home End", "top / follow  "), ("/", "search  "), ("l", "close  "), ("^C", "cancel")]
+            &[("↑↓ PgUp PgDn", "scroll  "), ("←→", "sideways  "), ("Home End", "top / follow  "), ("/", "search  "), ("l", "close  "), ("^C", "cancel")]
         } else {
-            &[("n N", "newer / older match  "), ("↑↓ PgUp PgDn", "scroll  "), ("/", "edit  "), ("Esc", "clear  "), ("l", "close  "), ("^C", "cancel")]
+            &[("n N", "newer / older match  "), ("↑↓ PgUp PgDn", "scroll  "), ("←→", "sideways  "), ("/", "edit  "), ("Esc", "clear  "), ("l", "close  "), ("^C", "cancel")]
         };
         for (k, what) in items {
             v.push(Span::styled(format!(" {} ", k), bold(crate::text::ACCENT)));
@@ -313,6 +335,28 @@ mod tests {
         v.key(Key::Esc, &l, 10);
         assert!(v.query.is_empty() && !v.typing);
         assert!(!v.key(Key::Char('l'), &l, 10));
+    }
+
+    #[test]
+    fn sideways_scroll_is_bounded_by_the_widest_visible_line_and_reset_by_esc() {
+        let mut v = LogView::default();
+        let mut l = log(20);
+        l[19] = format!("INFO: {}", "x".repeat(30));
+        v.key(Key::Left, &l, 10);
+        assert_eq!(v.hscroll, 0);
+        v.key(Key::Right, &l, 10);
+        assert_eq!(v.hscroll, 8);
+        for _ in 0..10 {
+            v.key(Key::Right, &l, 10);
+        }
+        // "INFO: " + 30 = 36 wide: the last step keeps 8 columns on screen.
+        assert_eq!(v.hscroll, 28);
+        let w = v.window(l.len(), 10);
+        assert!(v.title(l.len(), &w).ends_with("col 29+  [l]"), "{}", v.title(l.len(), &w));
+        v.key(Key::Left, &l, 10);
+        assert_eq!(v.hscroll, 20);
+        v.key(Key::Esc, &l, 10);
+        assert_eq!(v.hscroll, 0);
     }
 
     #[test]

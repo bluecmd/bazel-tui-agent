@@ -66,9 +66,9 @@ bazel --host_jvm_args=-javaagent:/absolute/path/to/bazel-tui-agent.jar build //.
 Changing the startup option restarts the Bazel server once. Keys while a
 build runs: `t` switches the tree order, `l` enlarges the log, Ctrl-C
 cancels. In the enlarged log, arrows and PgUp/PgDn scroll (Home for the
-top, End to follow the tail again), `/` types a search with matches
-highlighted as you type, `n`/`N` step to the newer/older match and Esc
-clears it. Actions that just finished stay listed under the running ones
+top, End to follow the tail again), `←`/`→` shift long lines sideways, `/`
+types a search with matches highlighted as you type, `n`/`N` step to the
+newer/older match and Esc clears it. Actions that just finished stay listed under the running ones
 for a few seconds, fading out, so a fast build still shows its work.
 `BAZEL_HOOK_UI=0` in the environment turns the UI off.
 
