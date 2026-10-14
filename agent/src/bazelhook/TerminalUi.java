@@ -9,8 +9,13 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Moves bytes between the Rust engine and the client's streams. Every 100 ms, and right after a
- * message, it asks the engine what to write and writes it; nothing is formatted here.
+ * Moves bytes between the Rust engine and the client's streams. Every 100 ms, on its own thread,
+ * it asks the engine what to write and writes it; nothing is formatted here.
+ *
+ * <p>Only this thread (and the poller, for Ctrl-C) ever flushes. A flush renders a frame while
+ * holding the engine lock and then writes to the client over gRPC, where the server's
+ * BlockingStreamObserver waits until the client has drained the stream. Doing that from a Bazel
+ * thread, as happened once per message before, lets the terminal's drawing speed pace the build.
  *
  * <p>The stream is the one Bazel hands its own (silenced) UiEventHandler. The reporter's OutErr
  * would re-post every write as an event and recurse, so that one is never used.

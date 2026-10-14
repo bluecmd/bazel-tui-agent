@@ -159,9 +159,11 @@ final class EventForwarder implements EventHandler {
     p.bytes(out instanceof byte[] ? (byte[]) out : null);
     p.bytes(err instanceof byte[] ? (byte[]) err : null);
     send(p);
-    if (ui != null) {
-      ui.flush();
-    }
+    // Deliberately no ui.flush() here. This runs on whichever Bazel thread posted the message; a
+    // flush would render a frame and write it to the client through the server's
+    // BlockingStreamObserver, which waits for the client to drain the stream. On a build that
+    // prints a lot, Bazel's own threads would then be paced by the terminal. The UI thread
+    // flushes every 100 ms instead, so a message is on screen at most that much later.
   }
 
   // ---- EventBus: everything -------------------------------------------------------------------

@@ -59,7 +59,7 @@ public final class HookModule extends BlazeModule {
       }
       forwarder = new EventForwarder(handle, ui, "1".equals(clientEnv.get("BAZEL_HOOK_ALL_EVENTS")));
       forwarder.start(env);
-      listenForResizes(handle, ui);
+      listenForResizes(handle);
       if (wantUi) {
         // The engine prints its own build result and test overview (the values Bazel would have
         // used went out with COMMAND_STARTED, so the engine can honour them).
@@ -117,7 +117,7 @@ public final class HookModule extends BlazeModule {
    * handed to the dispatcher. Subscribe through a reflective proxy so the agent has no compile-time
    * dependency on that class (older servers simply have no monitor).
    */
-  private static void listenForResizes(long handle, TerminalUi ui) {
+  private static void listenForResizes(long handle) {
     Object monitor = Agent.terminalSizeMonitor();
     if (monitor == null) {
       return;
@@ -139,9 +139,6 @@ public final class HookModule extends BlazeModule {
               (p, method, args) -> {
                 if (method.getName().equals("terminalSizeChanged") && args != null && args.length == 2) {
                   Native.event(handle, new Packet(Packet.TERMINAL_SIZE).i64(((Number) args[0]).longValue()).i64(((Number) args[1]).longValue()).finish());
-                  if (ui != null) {
-                    ui.flush();
-                  }
                   return null;
                 }
                 if (method.getName().equals("hashCode")) {
