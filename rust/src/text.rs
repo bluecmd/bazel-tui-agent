@@ -55,6 +55,15 @@ pub const ABORT: (u8, u8, u8) = (255, 140, 40);
 pub const ACCENT: (u8, u8, u8) = (118, 210, 117);
 pub const TITLE: (u8, u8, u8) = (200, 225, 200);
 pub const MUTED: (u8, u8, u8) = (125, 150, 130);
+/// The end-of-command report's calmer tokens: its success tick, its secondary text (a grey-blue
+/// rather than SGR 2 faint, which Konsole and others draw at almost full intensity) and the one
+/// link it prints.
+pub const REPORT_OK: (u8, u8, u8) = (90, 220, 120);
+pub const REPORT_MUTED: (u8, u8, u8) = (120, 130, 150);
+/// Emphasised names in the report: bold always with this explicit foreground, because bold on
+/// the default foreground comes out in the scheme's "intense" colour (blue in Konsole's Breeze).
+pub const REPORT_TEXT: (u8, u8, u8) = (214, 219, 230);
+pub const LINK: (u8, u8, u8) = (140, 170, 255);
 
 pub fn mnemonic_rgb(m: &str) -> (u8, u8, u8) {
     match m {

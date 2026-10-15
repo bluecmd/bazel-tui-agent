@@ -23,21 +23,25 @@ impl Sty {
     fn wrap(&self, codes: &str, t: &str) -> String {
         if self.color { format!("\x1b[{}m{}{}", codes, t, RESET) } else { t.to_string() }
     }
+    /// A name in bold, always with an explicit foreground (never bold on the default colour).
     pub fn bold(&self, t: &str) -> String {
-        self.wrap("1", t)
+        self.wrap(&format!("1;{}", crate::text::color_code(38, REPORT_TEXT.0, REPORT_TEXT.1, REPORT_TEXT.2)), t)
     }
+    /// Secondary text, in the report's muted colour (never SGR 2 faint: Konsole and other
+    /// terminals draw that at almost normal intensity).
     pub fn dim(&self, t: &str) -> String {
-        self.wrap("2", t)
+        self.rgb(t, REPORT_MUTED)
     }
     pub fn rgb(&self, t: &str, c: (u8, u8, u8)) -> String {
         self.wrap(&crate::text::color_code(38, c.0, c.1, c.2), t)
     }
+    /// Colour and bold as two SGR runs, one reset after both.
     pub fn rgb_bold(&self, t: &str, c: (u8, u8, u8)) -> String {
-        self.wrap(&format!("{};1", crate::text::color_code(38, c.0, c.1, c.2)), t)
+        if self.color { format!("\x1b[{}m\x1b[1m{}{}", crate::text::color_code(38, c.0, c.1, c.2), t, RESET) } else { t.to_string() }
     }
     /// A clickable web address (OSC 8, which terminals without hyperlinks ignore), coloured.
     pub fn link(&self, url: &str, c: (u8, u8, u8)) -> String {
-        if self.color { format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, self.rgb(url, c)) } else { url.to_string() }
+        if self.color { format!("\x1b[{}m\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\{}", crate::text::color_code(38, c.0, c.1, c.2), url, url, RESET) } else { url.to_string() }
     }
 }
 
@@ -152,10 +156,10 @@ fn verdict_line(s: &State, now: i64, sty: &Sty, success: bool) -> String {
             "{} {} {}  {}",
             mark,
             command,
-            sty.rgb_bold(&format!("cancelled by Ctrl-C after {}, stopped in {}", fmt_duration((t - s.t0_ms) as f64 / 1000.0), fmt_duration((now - t).max(0) as f64 / 1000.0)), ABORT),
+            sty.rgb(&format!("cancelled by Ctrl-C after {}, stopped in {}", fmt_duration((t - s.t0_ms) as f64 / 1000.0), fmt_duration((now - t).max(0) as f64 / 1000.0)), ABORT),
             sty.dim(&parts.join(" · "))
         ),
-        None => format!("{} {} {}  {}", mark, command, sty.bold(&fmt_duration(total)), sty.dim(&parts.join(" · "))),
+        None => format!("{} {} {}  {}", mark, command, fmt_duration(total), sty.dim(&parts.join(" · "))),
     }
 }
 
@@ -169,11 +173,10 @@ fn sources_line(s: &State, sty: &Sty) -> Option<String> {
     for src in Source::ALL {
         let n = s.source_count(src);
         if n > 0 {
-            let text = format!("{} {}", with_commas(n), src.name());
-            parts.push(if src.is_hit() { sty.rgb(&text, OK) } else { sty.rgb(&text, WARN) });
+            parts.push(format!("{} {}", with_commas(n), src.name()));
         }
     }
-    Some(format!("  {} {}  {}", sty.dim("actions"), sty.bold(&with_commas(total)), parts.join(&sty.dim(" · "))))
+    Some(format!("  {} {}  {}", sty.dim("actions"), with_commas(total), sty.dim(&parts.join(" · "))))
 }
 
 /// The build's page on the Build Event Service, as a link: "  results  https://…".
@@ -181,7 +184,7 @@ fn results_line(s: &State, sty: &Sty) -> Option<String> {
     if s.bes_url.is_empty() {
         return None;
     }
-    Some(format!("  {}  {}", sty.dim("results"), sty.link(&s.bes_url, ACCENT)))
+    Some(format!("  {}  {}", sty.dim("results"), sty.link(&s.bes_url, LINK)))
 }
 
 // ---- paths ------------------------------------------------------------------------------------
@@ -235,7 +238,7 @@ impl Paths {
 // ---- build: artifacts -------------------------------------------------------------------------
 
 enum Kind {
-    File { exec: bool },
+    File,
     Dir { files: u64 },
     Missing,
 }
@@ -258,9 +261,7 @@ fn stat_row(paths: &Paths, exec_path: &str, t0_ms: i64) -> FileRow {
         let (files, size, newest) = walk(&abs, 0, 0, 0, &mut 0);
         FileRow { path, abs, size, kind: Kind::Dir { files }, fresh: newest >= t0_ms - 2000 }
     } else {
-        use std::os::unix::fs::PermissionsExt;
-        let exec = md.permissions().mode() & 0o111 != 0;
-        FileRow { path, abs, size: md.len(), kind: Kind::File { exec }, fresh: mtime_ms(&md) >= t0_ms - 2000 }
+        FileRow { path, abs, size: md.len(), kind: Kind::File, fresh: mtime_ms(&md) >= t0_ms - 2000 }
     }
 }
 
@@ -314,13 +315,13 @@ fn dir_tree(sty: &Sty, dir: &Path, t0_ms: i64, width: usize) -> String {
         let branch = if last { "└─" } else { "├─" };
         let shown_name = if *is_dir { format!("{}/", name) } else { name.clone() };
         let pad = " ".repeat(namew.saturating_sub(shown_name.width()));
-        let name_s = if *is_dir { sty.rgb(&shown_name, ACCENT) } else { shown_name.clone() };
+        let name_s = shown_name.clone();
         let detail = if *is_dir {
-            format!("{:>9}   {}", fmt_size(*size), sty.dim(&format!("{} file{}", files, if *files == 1 { "" } else { "s" })))
+            format!("{}   {}", sty.dim(&format!("{:>8}", fmt_size(*size))), sty.dim(&format!("{} file{}", files, if *files == 1 { "" } else { "s" })))
         } else {
-            format!("{:>9}   {}", fmt_size(*size), if *fresh { sty.rgb("●", OK) } else { sty.dim("○") })
+            format!("{}   {}", sty.dim(&format!("{:>8}", fmt_size(*size))), if *fresh { sty.rgb("✓", REPORT_OK) } else { sty.dim("○") })
         };
-        out.push_str(&format!("       {} {}{}  {}\n", sty.dim(branch), name_s, pad, detail));
+        out.push_str(&format!("       {} {}{}   {}\n", sty.dim(branch), name_s, pad, detail));
     }
     if entries.len() > shown {
         out.push_str(&format!("       {} {}\n", sty.dim("└─"), sty.dim(&format!("… {} more entries", entries.len() - shown))));
@@ -342,6 +343,16 @@ pub fn fmt_size(bytes: u64) -> String {
         format!("{:.1} {}", v, UNITS[u])
     } else {
         format!("{:.0} {}", v, UNITS[u])
+    }
+}
+
+/// A path as two runs: everything up to and including the last slash dim, the last component
+/// plain. A trailing slash (directory outputs) belongs to the last component.
+fn path_runs(sty: &Sty, path: &str) -> String {
+    let body = path.strip_suffix('/').unwrap_or(path);
+    match body.rfind('/') {
+        Some(i) => format!("{}{}", sty.dim(&path[..i + 1]), &path[i + 1..]),
+        None => path.to_string(),
     }
 }
 
@@ -420,18 +431,18 @@ fn artifacts(s: &State, sty: &Sty, width: usize) -> String {
             if targets.iter().any(|t| t.label == *label && t.failed) {
                 out.push_str(&format!(" {} {}  {}\n", sty.rgb_bold("✘", BAD), sty.bold(label), sty.rgb("failed to build", BAD)));
             } else {
-                out.push_str(&format!(" {} {}  {}\n", sty.rgb("▸", ACCENT), sty.bold(label), sty.dim("no files")));
+                out.push_str(&format!(" {} {}  {}\n", sty.dim("▸"), sty.bold(label), sty.dim("no files")));
             }
             continue;
         }
-        out.push_str(&format!(" {} {}\n", sty.rgb("▸", ACCENT), sty.bold(label)));
+        out.push_str(&format!(" {} {}\n", sty.dim("▸"), sty.bold(label)));
         for f in files {
             let pad = " ".repeat(pathw.saturating_sub(f.path.width()));
+            // The directory part dim, the file or directory name in the plain foreground.
             let path = match f.kind {
-                Kind::File { exec: true } => sty.rgb_bold(&f.path, ACCENT),
-                Kind::Dir { .. } => sty.rgb(&format!("{}/", f.path), ACCENT),
                 Kind::Missing => sty.dim(&f.path),
-                _ => f.path.clone(),
+                Kind::Dir { .. } => path_runs(sty, &format!("{}/", f.path)),
+                _ => path_runs(sty, &f.path),
             };
             let pad = if matches!(f.kind, Kind::Dir { .. }) { pad.get(1..).unwrap_or("").to_string() } else { pad };
             let size = match f.kind {
@@ -439,13 +450,13 @@ fn artifacts(s: &State, sty: &Sty, width: usize) -> String {
                 _ => fmt_size(f.size),
             };
             let status = match (&f.kind, f.fresh) {
-                (Kind::Missing, _) => sty.dim("? missing"),
-                (Kind::Dir { files }, true) => sty.rgb(&format!("● {} files", files), OK),
+                (Kind::Missing, _) => sty.rgb("? missing", WARN),
+                (Kind::Dir { files }, true) => format!("{} {}", sty.rgb("✓", REPORT_OK), sty.dim(&format!("{} files", files))),
                 (Kind::Dir { files }, false) => sty.dim(&format!("○ {} files", files)),
-                (_, true) => sty.rgb("● built", OK),
+                (_, true) => format!("{} {}", sty.rgb("✓", REPORT_OK), sty.dim("built")),
                 (_, false) => sty.dim("○ unchanged"),
             };
-            out.push_str(&format!("     {}{}  {:>9}   {}\n", path, pad, size, status));
+            out.push_str(&format!("     {}{}   {}   {}\n", path, pad, sty.dim(&format!("{:>8}", size)), status));
             if solo_dir {
                 out.push_str(&dir_tree(sty, &f.abs, s.t0_ms, width));
             }
@@ -619,5 +630,63 @@ fn fmt_test_time(ms: u64) -> String {
         format!("{:.1}s", ms as f64 / 1000.0)
     } else {
         fmt_duration(ms as f64 / 1000.0)
+    }
+}
+
+#[cfg(test)]
+mod report_style_tests {
+    use super::*;
+    use crate::state::State;
+
+    /// One target with a fresh file output renders exactly as the design spec's reference line:
+    /// a dim marker, the label bold, the directory part dim, the name plain, the size dim, the
+    /// tick in the report's green and the status word dim, with a reset between every run.
+    #[test]
+    fn artifact_rows_use_bold_for_names_and_colour_only_for_the_status() {
+        crate::text::TRUECOLOR.store(true, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("bazel-hook-report-{}", std::process::id()));
+        let pkg = dir.join("bazel-out/bin/pkg");
+        std::fs::create_dir_all(pkg.join("docs.rustdoc")).unwrap();
+        std::fs::write(pkg.join("unit_test"), b"0123456789").unwrap();
+        std::fs::write(pkg.join("docs.rustdoc/index.html"), b"<html>").unwrap();
+        let now = std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
+        let mut s = State::default();
+        s.command = Some("build".into());
+        s.exec_root = dir.to_string_lossy().into_owned();
+        s.workspace = dir.join("nowhere").to_string_lossy().into_owned();
+        s.show_result = 1;
+        s.t0_ms = now - 1000;
+        s.build_success = Some(true);
+        s.targets.push(TargetDone { label: "//pkg:unit_test".into(), failed: false, outputs: vec![pkg.join("unit_test").to_string_lossy().into_owned()] });
+        s.targets.push(TargetDone { label: "//pkg:docs".into(), failed: false, outputs: vec![pkg.join("docs.rustdoc").to_string_lossy().into_owned()] });
+        let out = report(&s, now, true, 120).stderr;
+        std::fs::remove_dir_all(&dir).ok();
+        let expect_file = " \x1b[38;2;120;130;150m▸\x1b[0m \x1b[1;38;2;214;219;230m//pkg:unit_test\x1b[0m\n     \x1b[38;2;120;130;150mbazel-out/bin/pkg/\x1b[0munit_test      \x1b[38;2;120;130;150m    10 B\x1b[0m   \x1b[38;2;90;220;120m✓\x1b[0m \x1b[38;2;120;130;150mbuilt\x1b[0m\n";
+        let expect_dir = " \x1b[38;2;120;130;150m▸\x1b[0m \x1b[1;38;2;214;219;230m//pkg:docs\x1b[0m\n     \x1b[38;2;120;130;150mbazel-out/bin/pkg/\x1b[0mdocs.rustdoc/   \x1b[38;2;120;130;150m     6 B\x1b[0m   \x1b[38;2;90;220;120m✓\x1b[0m \x1b[38;2;120;130;150m1 files\x1b[0m\n";
+        assert!(out.contains(expect_file), "{:?}", out);
+        assert!(out.contains(expect_dir), "{:?}", out);
+        // The header: the tick and verb as before, the time plain, the statistics dim.
+        assert!(out.contains("\x1b[38;2;118;230;117m\x1b[1m✔\x1b[0m \x1b[1;38;2;214;219;230mbuild\x1b[0m 1s  \x1b[38;2;120;130;150m"), "{:?}", out);
+        assert!(!out.contains("\x1b[1m1s"), "{:?}", out);
+        assert!(!out.contains("\x1b[2"), "no faint anywhere: {:?}", out);
+        // Every `ESC[1m` must follow a colour run; a bare one would be bold on the default colour.
+        assert_eq!(out.matches("\x1b[1m").count(), out.matches("m\x1b[1m").count(), "bold on the default foreground: {:?}", out);
+        // The cancelled header and the link, byte for byte as in the design reference.
+        s.cancelled_ms = Some(s.t0_ms + 217_000);
+        s.bes_url = "https://app.buildbuddy.io/invocation/d5a6".into();
+        s.build_success = Some(false);
+        let out = report(&s, s.t0_ms + 219_000, true, 120).stderr;
+        assert!(out.starts_with("\x1b[38;2;255;90;90m\x1b[1mERROR:\x1b[0m Build did NOT complete successfully\n\x1b[38;2;255;90;90m\x1b[1m✘\x1b[0m \x1b[1;38;2;214;219;230mbuild\x1b[0m \x1b[38;2;255;140;40mcancelled by Ctrl-C after 3m37s, stopped in 2s\x1b[0m  \x1b[38;2;120;130;150m"), "{:?}", out);
+        assert!(out.contains("  \x1b[38;2;120;130;150mresults\x1b[0m  \x1b[38;2;140;170;255m\x1b]8;;https://app.buildbuddy.io/invocation/d5a6\x1b\\https://app.buildbuddy.io/invocation/d5a6\x1b]8;;\x1b\\\x1b[0m\n"), "{:?}", out);
+    }
+
+    #[test]
+    fn path_splits_at_the_last_slash_with_a_trailing_slash_kept_on_the_name() {
+        let sty = Sty { color: true };
+        crate::text::TRUECOLOR.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(path_runs(&sty, "bazel-bin/a/b"), "\x1b[38;2;120;130;150mbazel-bin/a/\x1b[0mb");
+        assert_eq!(path_runs(&sty, "bazel-bin/a/docs/"), "\x1b[38;2;120;130;150mbazel-bin/a/\x1b[0mdocs/");
+        assert_eq!(path_runs(&sty, "plain"), "plain");
+        assert_eq!(path_runs(&Sty { color: false }, "bazel-bin/a/b"), "bazel-bin/a/b");
     }
 }
