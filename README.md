@@ -1,4 +1,4 @@
-# bazel-tui-agent
+# TUI agent for Bazel
 
 A modern terminal UI for Bazel builds, running inside the Bazel server: a
 Java agent injects a module that feeds every build event to a Rust library,
