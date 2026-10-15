@@ -21,17 +21,35 @@ jobs:
         env:
           LABEL: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
 
+      - name: Test the Rust crate
+        run: bazelisk test //rust:all --test_output=errors
+
+      # The replay tool: the UI's engine on a synthetic build, for trying the UI in a terminal
+      # without Bazel (Linux x86_64, like the jar's native library).
+      - name: Build the replay tool
+        run: bazelisk build //rust:bazelhook-replay
+
       - name: Collect
-        run: cp bazel-bin/agent/agent_deploy.jar bazel-tui-agent.jar
+        run: |
+          cp bazel-bin/agent/agent_deploy.jar bazel-tui-agent.jar
+          cp bazel-bin/rust/bazelhook-replay bazelhook-replay-linux-x86_64
+          chmod +x bazelhook-replay-linux-x86_64
 
       - uses: actions/upload-artifact@v4
         with:
           name: bazel-tui-agent.jar
           path: bazel-tui-agent.jar
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bazelhook-replay-linux-x86_64
+          path: bazelhook-replay-linux-x86_64
+
       - name: Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: bazel-tui-agent.jar
+          files: |
+            bazel-tui-agent.jar
+            bazelhook-replay-linux-x86_64
           generate_release_notes: true

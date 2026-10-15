@@ -100,10 +100,13 @@ runs the engine on a synthetic build (or on a `BAZEL_HOOK_TRACE` file) in the
 terminal it is started in, with that terminal's real size and keys:
 
 ```sh
-cd rust && cargo run --release --bin bazelhook-replay -- --scenario huge --speed 2
-bazelhook-replay --list     # the scenarios
-bazelhook-replay --probe    # colour bands in the SGR sequences the UI uses
+bazel run //rust:bazelhook-replay -- --scenario huge --speed 2
+bazel run //rust:bazelhook-replay -- --list     # the scenarios
+bazel run //rust:bazelhook-replay -- --probe    # colour bands in the SGR sequences the UI uses
 ```
+
+`bazel test //rust:all` runs the crate's tests. Releases carry the tool as
+`bazelhook-replay-linux-x86_64` next to the jar.
 
 ## Extra: Bazel autocomplete for fish
 

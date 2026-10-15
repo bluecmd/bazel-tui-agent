@@ -18,11 +18,18 @@ use_repo(rust, "rust_toolchains")
 
 register_toolchains("@rust_toolchains//:all")
 
+# The crates the Rust code uses, resolved by crate_universe from these specs; the pin is
+# rust/Cargo.Bazel.lock (refresh with `CARGO_BAZEL_REPIN=1 bazel build //rust:all`).
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
-crate.from_cargo(
+crate.spec(package = "jni", version = "0.21")
+crate.spec(package = "libc", version = "0.2")
+crate.spec(package = "ratatui", version = "0.29", default_features = False)
+crate.spec(package = "serde", version = "1", features = ["derive"])
+crate.spec(package = "serde_json", version = "1")
+crate.spec(package = "unicode-width", version = "0.2")
+crate.from_specs(
     name = "crates",
-    cargo_lockfile = "//rust:Cargo.lock",
-    manifests = ["//rust:Cargo.toml"],
+    cargo_lockfile = "//rust:Cargo.Bazel.lock",
 )
 use_repo(crate, "crates")
 

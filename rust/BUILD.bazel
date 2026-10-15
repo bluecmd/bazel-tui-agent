@@ -1,17 +1,53 @@
-load("@rules_rust//rust:defs.bzl", "rust_shared_library")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_shared_library", "rust_test")
+
+exports_files(["Cargo.Bazel.lock"])
+
+DEPS = [
+    "@crates//:jni",
+    "@crates//:libc",
+    "@crates//:ratatui",
+    "@crates//:serde",
+    "@crates//:serde_json",
+    "@crates//:unicode-width",
+]
+
+SRCS = glob(["src/*.rs"])
 
 # libbazelhook_ui.so: the status-block renderer, called from Java over JNI.
 rust_shared_library(
     name = "bazelhook_ui",
-    srcs = glob(["src/*.rs"]),
+    srcs = SRCS,
+    edition = "2021",
+    deps = DEPS,
+    visibility = ["//visibility:public"],
+)
+
+# The same crate as an rlib, for the replay tool and the tests.
+rust_library(
+    name = "bazelhook_ui_lib",
+    srcs = SRCS,
+    crate_name = "bazelhook_ui",
+    edition = "2021",
+    deps = DEPS,
+)
+
+# The engine on a synthetic build (or a trace file), drawing to the terminal it runs in:
+# `bazel run //rust:bazelhook-replay -- --scenario huge --speed 2`.
+rust_binary(
+    name = "bazelhook-replay",
+    srcs = ["src/bin/replay.rs"],
     edition = "2021",
     deps = [
-        "@crates//:jni",
+        ":bazelhook_ui_lib",
         "@crates//:libc",
-        "@crates//:ratatui",
-        "@crates//:serde",
         "@crates//:serde_json",
-        "@crates//:unicode-width",
     ],
     visibility = ["//visibility:public"],
+)
+
+# The #[cfg(test)] modules inside the crate.
+rust_test(
+    name = "unit",
+    crate = ":bazelhook_ui_lib",
+    edition = "2021",
 )
