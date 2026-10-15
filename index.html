@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bazel-tui-agent demos</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/asciinema-player@3.9.0/dist/bundle/asciinema-player.css">
+<style>
+  /* The casts draw the Bazel logo with sextants (U+1FB00..), which the player leaves to the font
+     while it paints the U+2580 block elements itself; few system monospace fonts have them, so the
+     terminal uses a subset of JuliaMono (OFL, LICENSE-JuliaMono.txt; demo/pages/fonts.sh). Its
+     sextants fill exactly its 1.175em content box, which the player's terminalLineHeight matches
+     so the logo's rows join. */
+  @font-face { font-family: "JuliaMono Demo"; font-weight: 400; src: url(julia-mono-regular.woff2) format("woff2"); }
+  @font-face { font-family: "JuliaMono Demo"; font-weight: 700; src: url(julia-mono-bold.woff2) format("woff2"); }
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 24px 16px 48px; background: #14161c; color: #d6dae3; font: 15px/1.5 system-ui, sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h1 a { color: #9fb4ff; text-decoration: none; }
+  .sub { color: #8b93a7; margin: 0 0 24px; }
+  nav a { color: #9fb4ff; margin-right: 14px; }
+  section { margin: 32px 0; }
+  h2 { font-size: 17px; margin: 0 0 8px; }
+  p.what { color: #a3aabb; margin: 0 0 10px; }
+  .player { border-radius: 8px; overflow: hidden; border: 1px solid #2a2f3d; }
+  /* The player reserves a strip under the terminal for its control bar and only shows the bar on
+     hover, which leaves what looks like empty rows; keep the bar visible instead. */
+  .player div.ap-wrapper .ap-control-bar { opacity: 1; }
+  footer { color: #6c7384; font-size: 13px; margin-top: 40px; }
+</style>
+</head>
+<body>
+<main>
+  <h1><a href="https://github.com/bluecmd/bazel-tui-agent">bazel-tui-agent</a> demos</h1>
+  <p class="sub">Real recordings, replayed in your browser as text: pause, select, copy. Generated 2026-10-15T06:23Z.</p>
+  <nav><a href="#build">build</a><a href="#test">test</a><a href="#cached">cached + directory output</a><a href="#help">help finder</a><a href="#failing">failing tests</a></nav>
+
+  <section id="build">
+    <h2>bazel build //...</h2>
+    <p class="what">Server start, module resolution and analysis, then the full-screen dashboard: progress, parallelism and throughput graphs, running actions, the build tree, mnemonics and the cache panel; ends with the per-target output listing.</p>
+    <div class="player" id="p-build"></div>
+  </section>
+  <section id="test">
+    <h2>bazel test //...</h2>
+    <p class="what">The same dashboard while tests run, then the test overview: counts, failures first, cases and log paths.</p>
+    <div class="player" id="p-test"></div>
+  </section>
+  <section id="cached">
+    <h2>bazel build …:docs --remote_cache=…</h2>
+    <p class="what">A single target with a directory output: the report lists what is inside it, and the cache breakdown shows where actions came from.</p>
+    <div class="player" id="p-cached"></div>
+  </section>
+  <section id="help">
+    <h2>bazel help</h2>
+    <p class="what">Interactive, lazy-matching search over every command and option, with a preview pane. Enter prints the entry; Esc prints the usual usage text.</p>
+    <div class="player" id="p-help"></div>
+  </section>
+  <section id="failing">
+    <h2>bazel test //... with failures</h2>
+    <p class="what">The small test workspace shipped with the hook: a failing test, a flaky one, cached ones.</p>
+    <div class="player" id="p-failing"></div>
+  </section>
+  <footer>Recorded with asciinema from the real terminal stream; the README's animated images are rendered from these casts.</footer>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/asciinema-player@3.9.0/dist/bundle/asciinema-player.min.js"></script>
+<script>
+  for (const name of ["build", "test", "cached", "help", "failing"]) {
+    const el = document.getElementById("p-" + name);
+    if (!el) continue;
+    AsciinemaPlayer.create(name + ".cast", el, {
+      idleTimeLimit: 2, speed: 1.25, poster: "npt:0:3", theme: "monokai", fit: "width", terminalFontSize: "small", preload: true,
+      terminalFontFamily: "'JuliaMono Demo', Consolas, Menlo, monospace", terminalLineHeight: 1.175
+    });
+  }
+</script>
+</body>
+</html>
