@@ -37,7 +37,8 @@ mkdir -p "$DIR"
 had_jar=0
 [ -f "$JAR" ] && had_jar=1
 echo "downloading ${VERSION:-the latest release} ..."
-curl -fsSL --retry 3 -o "$JAR.tmp" "$URL"
+# Releases before v0.6 named the asset bazel-tui-agent.jar.
+curl -fsSL --retry 3 -o "$JAR.tmp" "$URL" || curl -fsSL --retry 3 -o "$JAR.tmp" "${URL%/*}/bazel-tui-agent.jar"
 # A jar is a zip; anything else (an error page, say) is not installed.
 [ "$(head -c 2 "$JAR.tmp")" = PK ] || { rm -f "$JAR.tmp"; echo "install.sh: $URL is not a jar" >&2; exit 1; }
 # mv keeps a running Bazel server on the old file until it restarts.
