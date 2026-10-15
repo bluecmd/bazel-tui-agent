@@ -50,7 +50,7 @@ inside, and the cache panel shows where the actions came from.
 ## Enable
 
 Installed with the quick install at the top? Then this is already done. By
-hand: download `bazel-tui-agent.jar` from the [releases](../../releases) and
+hand: download `bazel-tui-agent-linux.jar` from the [releases](../../releases) and
 add the startup option to your `~/.bazelrc` (or a workspace `.bazelrc`):
 
 ```

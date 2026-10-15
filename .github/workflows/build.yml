@@ -31,14 +31,14 @@ jobs:
 
       - name: Collect
         run: |
-          cp bazel-bin/agent/agent_deploy.jar bazel-tui-agent.jar
+          cp bazel-bin/agent/agent_deploy.jar bazel-tui-agent-linux.jar
           cp bazel-bin/rust/bazelhook-replay bazelhook-replay-linux-x86_64
           chmod +x bazelhook-replay-linux-x86_64
 
       - uses: actions/upload-artifact@v4
         with:
-          name: bazel-tui-agent.jar
-          path: bazel-tui-agent.jar
+          name: bazel-tui-agent-linux.jar
+          path: bazel-tui-agent-linux.jar
 
       - uses: actions/upload-artifact@v4
         with:
@@ -50,6 +50,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            bazel-tui-agent.jar
+            bazel-tui-agent-linux.jar
             bazelhook-replay-linux-x86_64
           generate_release_notes: true

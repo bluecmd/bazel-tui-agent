@@ -3,7 +3,8 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/bluecmd/bazel-tui-agent/main/install.sh | bash
 #
-# The jar goes to ~/.local/share/bazel-tui-agent/bazel-tui-agent.jar and one startup line is
+# The release asset bazel-tui-agent-linux.jar (the native library is Linux x86_64) goes to
+# ~/.local/share/bazel-tui-agent/bazel-tui-agent.jar and one startup line is
 # appended to ~/.bazelrc (not again if it is already there). Running it again updates the jar in
 # place. Settings, as environment variables:
 #   VERSION=v0.3            a release tag (default: the newest release, pre-releases included)
@@ -15,6 +16,7 @@ REPO=bluecmd/bazel-tui-agent
 DIR=${DIR:-$HOME/.local/share/bazel-tui-agent}
 RC=${BAZELRC_FILE:-$HOME/.bazelrc}
 JAR="$DIR/bazel-tui-agent.jar"
+ASSET=bazel-tui-agent-linux.jar
 
 command -v curl >/dev/null || { echo "install.sh: curl is needed" >&2; exit 1; }
 
@@ -26,9 +28,9 @@ if [ -z "$VERSION" ]; then
     sed -n 's/^ *"tag_name": *"\([^"]*\)".*/\1/p' | head -1 || true)
 fi
 if [ -n "$VERSION" ]; then
-  URL="https://github.com/$REPO/releases/download/$VERSION/bazel-tui-agent.jar"
+  URL="https://github.com/$REPO/releases/download/$VERSION/$ASSET"
 else
-  URL="https://github.com/$REPO/releases/latest/download/bazel-tui-agent.jar"
+  URL="https://github.com/$REPO/releases/latest/download/$ASSET"
 fi
 
 mkdir -p "$DIR"
