@@ -6,6 +6,7 @@
 //! produces the exact bytes the Java side writes to the client's stderr/stdout. Optionally it
 //! appends every event to a JSON trace file.
 
+mod browser;
 mod dashboard;
 mod events;
 mod help;
@@ -57,7 +58,7 @@ pub extern "system" fn Java_bazelhook_Native_create(mut env: JNIEnv, _class: JCl
     let trace_path: String = env.get_string(&trace).map(|s| s.into()).unwrap_or_default();
     let e = Engine {
         state: State::default(),
-        terminal: if ui != 0 { Some(Terminal::new(width.max(0) as usize, color != 0, rows.max(0) as usize, pty::Pty::open(client_pid))) } else { None },
+        terminal: if ui != 0 { Some(Terminal::new(width.max(0) as usize, color != 0, rows.max(0) as usize, pty::Pty::open(client_pid), client_pid)) } else { None },
         trace: if trace_path.is_empty() { None } else { Trace::open(&trace_path) },
     };
     Box::into_raw(Box::new(Mutex::new(e))) as jlong

@@ -245,6 +245,8 @@ pub struct Renderer {
     color: bool,
     tick: usize,
     tree_by_size: bool,
+    /// What `o` last did; the title acknowledges it for a moment.
+    pub opened: Option<crate::dashboard::Opened>,
     term: Terminal<TestBackend>,
 }
 
@@ -252,7 +254,7 @@ impl Renderer {
     pub fn new(width: usize, color: bool, rows: usize) -> Renderer {
         let width = width.clamp(40, 500) as u16 - 1; // one column of margin against autowrap
         let rows = rows.clamp(4, 40) as u16;
-        Renderer { width, rows, term_rows: 0, color, tick: 0, tree_by_size: false, term: Terminal::new(TestBackend::new(width, rows)).expect("test backend") }
+        Renderer { width, rows, term_rows: 0, color, tick: 0, tree_by_size: false, opened: None, term: Terminal::new(TestBackend::new(width, rows)).expect("test backend") }
     }
 
     /// Follows the client's terminal; the block keeps at most half the screen.
@@ -338,6 +340,13 @@ impl Renderer {
                 badges.push(Span::styled(format!(" {}✗", failed), st(BAD)));
             }
             badges.push(Span::raw("  "));
+        }
+        // The build's page on the Build Event Service and the key that opens it, when the title
+        // line has room for it next to the phases.
+        if !s.bes_url.is_empty() && width >= 110 {
+            let host = crate::browser::host(&s.bes_url);
+            badges.push(Span::styled("↗ ", st(ACCENT)));
+            badges.push(self.opened.as_ref().and_then(|o| o.note(host, now, false)).unwrap_or_else(|| Span::styled(format!("{} [o]  ", host), st(MUTED))));
         }
         badges.push(Span::styled(format!("{} ", fmt_elapsed((now - s.t0_ms) as f64 / 1000.0)), bold(TITLE)));
 

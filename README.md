@@ -64,8 +64,10 @@ bazel --host_jvm_args=-javaagent:/absolute/path/to/bazel-tui-agent.jar build //.
 ```
 
 Changing the startup option restarts the Bazel server once. Keys while a
-build runs: `t` switches the tree order, `l` enlarges the log, Ctrl-C
-cancels. In the enlarged log, arrows and PgUp/PgDn scroll (Home for the
+build runs: `t` switches the tree order, `l` enlarges the log, `o` opens
+the build's page on your Build Event Service in the browser (with
+`--bes_results_url`; the address is also printed as a link at the end),
+Ctrl-C cancels. In the enlarged log, arrows and PgUp/PgDn scroll (Home for the
 top, End to follow the tail again), `←`/`→` shift long lines sideways, `/`
 types a search with matches highlighted as you type, `n`/`N` step to the
 newer/older match and Esc clears it. Each line shows the time it arrived,

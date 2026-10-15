@@ -58,6 +58,9 @@ pub enum Event {
         test_summary: String,
         /// The release tag the agent jar was built from ("dev" when unstamped).
         agent_version: String,
+        /// This invocation's page on the Build Event Service (`--bes_results_url` + command id,
+        /// as Bazel's "Streaming build results to:" line has it); empty without a BES backend.
+        bes_url: String,
     },
     BuildStarted { targets: Vec<String>, build_id: String },
     Phase { phase: Phase },

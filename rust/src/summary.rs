@@ -35,6 +35,10 @@ impl Sty {
     pub fn rgb_bold(&self, t: &str, c: (u8, u8, u8)) -> String {
         self.wrap(&format!("{};1", crate::text::color_code(38, c.0, c.1, c.2)), t)
     }
+    /// A clickable web address (OSC 8, which terminals without hyperlinks ignore), coloured.
+    pub fn link(&self, url: &str, c: (u8, u8, u8)) -> String {
+        if self.color { format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, self.rgb(url, c)) } else { url.to_string() }
+    }
 }
 
 pub struct Report {
@@ -46,7 +50,15 @@ pub struct Report {
 pub fn report(s: &State, now: i64, color: bool, width: usize) -> Report {
     let sty = Sty { color };
     let mut rep = Report { stderr: String::new(), stdout: String::new() };
-    let Some(success) = s.build_success else { return rep };
+    let Some(success) = s.build_success else {
+        // No build verdict (a query, a failure before the build started): the BES page still
+        // exists and Bazel's own line about it was held back.
+        if let Some(line) = results_line(s, &sty) {
+            rep.stderr.push_str(&line);
+            rep.stderr.push('\n');
+        }
+        return rep;
+    };
     let width = width.clamp(60, 200);
 
     rep.stderr.push_str(&completion_line(s, &sty, success));
@@ -54,6 +66,10 @@ pub fn report(s: &State, now: i64, color: bool, width: usize) -> Report {
     rep.stderr.push_str(&verdict_line(s, now, &sty, success));
     rep.stderr.push('\n');
     if let Some(line) = sources_line(s, &sty) {
+        rep.stderr.push_str(&line);
+        rep.stderr.push('\n');
+    }
+    if let Some(line) = results_line(s, &sty) {
         rep.stderr.push_str(&line);
         rep.stderr.push('\n');
     }
@@ -158,6 +174,14 @@ fn sources_line(s: &State, sty: &Sty) -> Option<String> {
         }
     }
     Some(format!("  {} {}  {}", sty.dim("actions"), sty.bold(&with_commas(total)), parts.join(&sty.dim(" · "))))
+}
+
+/// The build's page on the Build Event Service, as a link: "  results  https://…".
+fn results_line(s: &State, sty: &Sty) -> Option<String> {
+    if s.bes_url.is_empty() {
+        return None;
+    }
+    Some(format!("  {}  {}", sty.dim("results"), sty.link(&s.bes_url, ACCENT)))
 }
 
 // ---- paths ------------------------------------------------------------------------------------

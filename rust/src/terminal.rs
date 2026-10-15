@@ -2,7 +2,7 @@
 //! stderr (and stdout). The Java side only writes what `poll` and `finish` return.
 
 use crate::logview::LogLine;
-use crate::dashboard::Dashboard;
+use crate::dashboard::{Dashboard, Opened};
 use crate::events::Message;
 use crate::help::{self, Finder};
 use crate::pty::{Key, Pty};
@@ -60,10 +60,16 @@ pub struct Terminal {
     help_mode: bool,
     finder: Option<Finder>,
     help_done: bool,
+    /// The Bazel client's pid, whose environment the browser is opened with.
+    client_pid: i64,
+    /// This invocation's page on the Build Event Service, if Bazel is streaming to one.
+    bes_url: String,
+    /// What `o` last did, for a short acknowledgement in the views.
+    opened: Option<Opened>,
 }
 
 impl Terminal {
-    pub fn new(width: usize, color: bool, rows: usize, pty: Option<Pty>) -> Terminal {
+    pub fn new(width: usize, color: bool, rows: usize, pty: Option<Pty>, client_pid: i64) -> Terminal {
         let mut t = Terminal {
             renderer: Renderer::new(width, color, rows),
             pty,
@@ -83,6 +89,9 @@ impl Terminal {
             help_mode: false,
             finder: None,
             help_done: false,
+            client_pid,
+            bes_url: String::new(),
+            opened: None,
         };
         t.sync_size();
         t
@@ -137,6 +146,7 @@ impl Terminal {
     /// The command just started: decide whether this is an interactive `help`.
     pub fn command_started(&mut self, state: &State) {
         self.command = state.command.clone().unwrap_or_default();
+        self.bes_url = state.bes_url.clone();
         self.help_mode = state.interactive_help() && self.pty.as_ref().map_or(false, |p| p.interactive()) && self.current_size().is_some();
     }
 
@@ -147,9 +157,10 @@ impl Terminal {
         self.help_mode && !self.help_done && (self.finder.is_some() || !state.help.is_empty())
     }
 
-    /// Keys typed at the client's terminal: `+`/`-` block height, `t` tree order, `l` big log.
-    /// With the big log up, the log view takes scrolling and search keys first.
-    fn handle_keys(&mut self, keys: Vec<Key>) {
+    /// Keys typed at the client's terminal: `+`/`-` block height, `t` tree order, `l` big log,
+    /// `o` the build's page on the Build Event Service in the browser. With the big log up, the
+    /// log view takes scrolling and search keys first.
+    fn handle_keys(&mut self, keys: Vec<Key>, now_ms: i64) {
         for k in keys {
             if let Some(d) = self.dashboard.as_mut() {
                 if (d.show_log_big || d.log.typing) && d.log.key(k, &self.log_lines, d.log_height) {
@@ -169,6 +180,10 @@ impl Terminal {
                     if let Some(d) = self.dashboard.as_mut() {
                         d.show_log_big = !d.show_log_big;
                     }
+                }
+                Key::Char('o') if !self.bes_url.is_empty() => {
+                    let error = crate::browser::open(&self.bes_url, self.client_pid).err();
+                    self.opened = Some(Opened { at_ms: now_ms, error });
                 }
                 _ => {}
             }
@@ -209,9 +224,20 @@ impl Terminal {
         self.last_block.clear();
     }
 
+    /// Bazel's "Streaming build results to: <url>" line, printed at the start and the end of a
+    /// command streaming to a BES. The views show that page's host with the key that opens it
+    /// and the report prints the address as a link, so the line itself only goes to the log.
+    fn is_bazel_results_url(&self, m: &Message) -> bool {
+        !self.bes_url.is_empty() && m.kind == "INFO" && m.text.trim_start().starts_with("Streaming build results to:")
+    }
+
     /// Formats a message the way Bazel's UiEventHandler prints it.
     pub fn message(&mut self, m: &Message) {
         if self.is_bazel_test_stats(m) {
+            return;
+        }
+        if self.is_bazel_results_url(m) {
+            self.record_log(format!("INFO: {}\n", m.text.trim_end()).as_bytes());
             return;
         }
         match m.kind.as_str() {
@@ -285,7 +311,8 @@ impl Terminal {
         if self.help_mode {
             return self.poll_help(state, keys);
         }
-        self.handle_keys(keys);
+        self.handle_keys(keys, now_ms);
+        self.renderer.opened = self.opened.clone();
         if state.command_builds() && !state.finished {
             if let Some((cols, rows)) = self.dashboard_possible() {
                 return self.poll_dashboard(state, now_ms, cols, rows);
@@ -327,6 +354,7 @@ impl Terminal {
         let color = self.color;
         let d = self.dashboard.get_or_insert_with(|| Dashboard::new(cols, rows, color));
         d.resize(cols, rows);
+        d.opened = self.opened.clone();
         let frame = d.render(state, &self.log_lines, now_ms);
         let full = self.last_frame.len() != frame.len();
         for (y, line) in frame.iter().enumerate() {

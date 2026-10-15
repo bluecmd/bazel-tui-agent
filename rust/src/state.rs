@@ -190,6 +190,8 @@ pub struct State {
     pub show_result: i64,
     pub test_summary: String,
     pub agent_version: String,
+    /// The invocation's page on the Build Event Service, empty when there is none.
+    pub bes_url: String,
     pub t0_ms: i64,
     pub phase: String,
     pub phase_t: HashMap<String, i64>,
@@ -361,7 +363,7 @@ impl State {
     pub fn apply(&mut self, ev: &Stamped) {
         let now = ev.t_ms;
         match &ev.event {
-            Event::CommandStarted { command, args, workspace, exec_root, show_result, test_summary, agent_jar, agent_jar_mtime_ms, agent_version, .. } => {
+            Event::CommandStarted { command, args, workspace, exec_root, show_result, test_summary, agent_jar, agent_jar_mtime_ms, agent_version, bes_url, .. } => {
                 self.command = Some(command.clone());
                 self.args = args.clone();
                 self.workspace = workspace.clone();
@@ -371,6 +373,7 @@ impl State {
                 self.show_result = *show_result;
                 self.test_summary = test_summary.clone();
                 self.agent_version = agent_version.clone();
+                self.bes_url = bes_url.clone();
                 self.t0_ms = now;
                 self.tp_last = (now, 0);
                 self.last_sample_ms = now;

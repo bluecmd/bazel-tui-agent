@@ -94,7 +94,8 @@ final class EventForwarder implements EventHandler {
             .str(execRoot(env))
             .i64(showResult(env))
             .str(testSummary(env))
-            .str(Agent.version()));
+            .str(Agent.version())
+            .str(besUrl(env)));
     commandThread = Thread.currentThread();
     Agent.takeCancel(); // a cancel left over from an earlier command is not ours
     env.getEventBus().register(this);
@@ -134,6 +135,23 @@ final class EventForwarder implements EventHandler {
     Object o = options(env, "com.google.devtools.build.lib.exec.ExecutionOptions");
     Object v = Reflect.option(o, "testSummary");
     return v == null ? "" : v.toString().toLowerCase(java.util.Locale.ROOT);
+  }
+
+  /**
+   * The page for this invocation on the Build Event Service, built the way Bazel's own
+   * "Streaming build results to:" line builds it: {@code --bes_results_url} (with a slash added
+   * when it has none) followed by the command id. Empty unless a BES backend is configured too,
+   * since Bazel announces the URL only then.
+   */
+  private static String besUrl(CommandEnvironment env) {
+    Object o = options(env, "com.google.devtools.build.lib.buildeventservice.BuildEventServiceOptions");
+    Object backend = Reflect.option(o, "besBackend");
+    Object base = Reflect.option(o, "besResultsUrl");
+    if (backend == null || backend.toString().isEmpty() || base == null || base.toString().isEmpty()) {
+      return "";
+    }
+    String prefix = base.toString();
+    return (prefix.endsWith("/") ? prefix : prefix + "/") + env.getCommandId();
   }
 
   void finish() {

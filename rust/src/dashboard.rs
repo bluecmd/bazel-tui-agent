@@ -28,7 +28,32 @@ pub struct Dashboard {
     pub log: LogView,
     /// Rows the log panel had on the last frame, for page-sized scrolling.
     pub log_height: usize,
+    /// What `o` last did; the hint acknowledges it for a moment.
+    pub opened: Option<Opened>,
     term: Terminal<TestBackend>,
+}
+
+/// One press of `o`: when, and why it failed if it did.
+#[derive(Clone, Debug)]
+pub struct Opened {
+    pub at_ms: i64,
+    pub error: Option<String>,
+}
+
+impl Opened {
+    /// The acknowledgement for the views, while it is fresh: a note in green for a page on
+    /// its way to the browser, in red when the opener could not be started (`detail` adds
+    /// which one and why; the inline block's title has no room for that).
+    pub fn note(&self, host: &str, now: i64, detail: bool) -> Option<Span<'static>> {
+        if now - self.at_ms >= OPENED_MS {
+            return None;
+        }
+        Some(match &self.error {
+            None => Span::styled(format!("opening {} in the browser  ", host), st(OK)),
+            Some(e) if detail => Span::styled(format!("could not open the browser ({})  ", e), st(BAD)),
+            Some(_) => Span::styled("could not open the browser  ", st(BAD)),
+        })
+    }
 }
 
 /// Border colour for every panel: the usual blue-grey, or orange while a cancel is in progress.
@@ -94,7 +119,7 @@ fn line_width(spans: &[Span]) -> usize {
 
 impl Dashboard {
     pub fn new(cols: u16, rows: u16, color: bool) -> Dashboard {
-        Dashboard { cols, rows, color, tick: 0, show_log_big: false, tree_by_size: false, log: LogView::default(), log_height: 1, term: Terminal::new(TestBackend::new(cols, rows)).expect("backend") }
+        Dashboard { cols, rows, color, tick: 0, show_log_big: false, tree_by_size: false, log: LogView::default(), log_height: 1, opened: None, term: Terminal::new(TestBackend::new(cols, rows)).expect("backend") }
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) {
@@ -366,6 +391,7 @@ impl Dashboard {
         let faces = logo_faces(now);
         let total_rows = self.rows as usize;
         let log_big = self.show_log_big;
+        let results = results_hint(s, self.opened.as_ref(), now);
         let logv = &mut self.log;
         logv.update(log);
         let log_height = &mut self.log_height;
@@ -522,11 +548,14 @@ impl Dashboard {
                 let hint = if log_big {
                     Line::from(logv.hint())
                 } else {
-                    Line::from(vec![
+                    let mut h = vec![
                         Span::styled(" t ", bold(ACCENT)), Span::styled("tree order  ", st(MUTED)),
                         Span::styled(" l ", bold(ACCENT)), Span::styled("log  ", st(MUTED)),
-                        Span::styled(" ^C ", bold(ACCENT)), Span::styled("cancel", st(MUTED)),
-                    ])
+                    ];
+                    h.extend(results.clone());
+                    h.push(Span::styled(" ^C ", bold(ACCENT)));
+                    h.push(Span::styled("cancel", st(MUTED)));
+                    Line::from(h)
                 };
                 f.render_widget(Paragraph::new(hint), rows_c[4]);
             })
@@ -535,6 +564,20 @@ impl Dashboard {
         let text = buffer_to_ansi(self.term.backend().buffer(), self.rows as usize, self.color);
         text.split('\n').map(|l| l.to_string()).collect()
     }
+}
+
+/// How long the views acknowledge a press of `o`.
+pub const OPENED_MS: i64 = 4000;
+
+/// The hint's entry for the build's page on the Build Event Service: the key and the host it
+/// opens, or what the last press did. Nothing without a BES.
+fn results_hint(s: &State, opened: Option<&Opened>, now: i64) -> Vec<Span<'static>> {
+    if s.bes_url.is_empty() {
+        return Vec::new();
+    }
+    let host = crate::browser::host(&s.bes_url);
+    let note = opened.and_then(|o| o.note(host, now, true)).unwrap_or_else(|| Span::styled(format!("open {}  ", host), st(MUTED)));
+    vec![Span::styled(" o ", bold(ACCENT)), note]
 }
 
 /// Colour of each action source in the cache panel (same order as `Source::ALL`): the caches
@@ -808,7 +851,7 @@ mod tests {
             s.apply(&Stamped { t_ms: t, event: ev });
             s.sample(t);
         };
-        push(&mut s, Event::CommandStarted { command: "build".into(), command_id: String::new(), workspace: String::new(), cwd: String::new(), args: vec!["//...".into()], start_ms: 1_000_000, bazel_version: String::new(), agent_jar: String::new(), agent_jar_mtime_ms: 0, exec_root: String::new(), show_result: 1, test_summary: "short".into(), agent_version: "v0.3".into() });
+        push(&mut s, Event::CommandStarted { command: "build".into(), command_id: String::new(), workspace: String::new(), cwd: String::new(), args: vec!["//...".into()], start_ms: 1_000_000, bazel_version: String::new(), agent_jar: String::new(), agent_jar_mtime_ms: 0, exec_root: String::new(), show_result: 1, test_summary: "short".into(), agent_version: "v0.3".into(), bes_url: String::new() });
         push(&mut s, Event::BuildStarted { targets: vec![], build_id: String::new() });
         for i in 0..40 {
             let ev = match i % 8 {
@@ -821,6 +864,39 @@ mod tests {
             push(&mut s, ev);
         }
         s
+    }
+
+    #[test]
+    fn bes_page_gets_a_key_in_both_renderers_and_the_report() {
+        let mut s = synthetic();
+        let t = 1_100_000i64;
+        s.apply(&Stamped { t_ms: t, event: Event::Phase { phase: crate::events::Phase::Execution } });
+        let mut d = Dashboard::new(120, 30, false);
+        let mut r = crate::render::Renderer::new(120, false, 12);
+        // No BES: no key, no mention.
+        assert!(!d.render(&s, &[], t).join("\n").contains(" o "));
+        assert!(!r.render(&s, t).contains("[o]"));
+        s.bes_url = "https://app.buildbuddy.io/invocation/4b49-01a4".into();
+        let text = d.render(&s, &[], t).join("\n");
+        assert!(text.contains(" o open app.buildbuddy.io"), "{}", text);
+        let inline = r.render(&s, t);
+        assert!(inline.contains("↗ app.buildbuddy.io [o]"), "{}", inline);
+        // Right after `o`, both acknowledge it; a few seconds later the key is back.
+        d.opened = Some(Opened { at_ms: t, error: None });
+        r.opened = d.opened.clone();
+        assert!(d.render(&s, &[], t + 500).join("\n").contains("opening app.buildbuddy.io in the browser"));
+        assert!(r.render(&s, t + 500).contains("opening app.buildbuddy.io in the browser"));
+        assert!(d.render(&s, &[], t + OPENED_MS + 1).join("\n").contains(" o open app.buildbuddy.io"));
+        d.opened = Some(Opened { at_ms: t, error: Some("xdg-open: No such file or directory (os error 2)".into()) });
+        r.opened = d.opened.clone();
+        assert!(d.render(&s, &[], t + 500).join("\n").contains("could not open the browser (xdg-open: No such file"));
+        assert!(r.render(&s, t + 500).contains("could not open the browser"));
+        // The report links the page whether or not there was a build verdict.
+        let rep = crate::summary::report(&s, t + 1000, true, 120);
+        assert!(rep.stderr.contains("\x1b]8;;https://app.buildbuddy.io/invocation/4b49-01a4\x1b\\"), "{}", rep.stderr);
+        s.apply(&Stamped { t_ms: t + 900, event: Event::BuildComplete { success: true, catastrophe: false, exit_code: 0, stop_ms: t + 900 } });
+        let rep = crate::summary::report(&s, t + 1000, false, 120);
+        assert!(rep.stderr.contains("Build completed successfully") && rep.stderr.contains("results  https://app.buildbuddy.io/invocation/4b49-01a4\n"), "{}", rep.stderr);
     }
 
     #[test]
