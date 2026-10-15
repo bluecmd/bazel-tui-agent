@@ -95,6 +95,16 @@ Such a jar reports itself as `tui dev`. Releases are built with
 `--stamp --embed_label=<tag>` (the workflow does this on `v*` tags), which
 puts the tag in `bazelhook/version` inside the jar.
 
+To see the UI without a Bazel build, `rust/` also builds a replay tool that
+runs the engine on a synthetic build (or on a `BAZEL_HOOK_TRACE` file) in the
+terminal it is started in, with that terminal's real size and keys:
+
+```sh
+cd rust && cargo run --release --bin bazelhook-replay -- --scenario huge --speed 2
+bazelhook-replay --list     # the scenarios
+bazelhook-replay --probe    # colour bands in the SGR sequences the UI uses
+```
+
 ## Extra: Bazel autocomplete for fish
 
 If you are using the fish terminal, do not forget the nice tab completion:

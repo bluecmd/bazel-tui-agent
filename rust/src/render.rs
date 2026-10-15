@@ -237,9 +237,14 @@ pub(crate) fn dim() -> Style {
     Style::new().add_modifier(Modifier::DIM)
 }
 
+/// The narrowest terminal the inline block is drawn on.
+pub const MIN_COLS: usize = 20;
+
 pub struct Renderer {
     width: u16,
     rows: u16,
+    /// The terminal is narrower than `MIN_COLS`: no block.
+    too_narrow: bool,
     /// Terminal height when known (from the client's pty); caps the block height.
     term_rows: u16,
     color: bool,
@@ -252,14 +257,17 @@ pub struct Renderer {
 
 impl Renderer {
     pub fn new(width: usize, color: bool, rows: usize) -> Renderer {
-        let width = width.clamp(40, 500) as u16 - 1; // one column of margin against autowrap
+        let width = width.clamp(MIN_COLS, 500) as u16 - 1; // one column of margin against autowrap
         let rows = rows.clamp(4, 40) as u16;
-        Renderer { width, rows, term_rows: 0, color, tick: 0, tree_by_size: false, opened: None, term: Terminal::new(TestBackend::new(width, rows)).expect("test backend") }
+        Renderer { width, rows, term_rows: 0, color, tick: 0, tree_by_size: false, opened: None, too_narrow: false, term: Terminal::new(TestBackend::new(width, rows)).expect("test backend") }
     }
 
-    /// Follows the client's terminal; the block keeps at most half the screen.
+    /// Follows the client's terminal; the block keeps at most half the screen. Below `MIN_COLS`
+    /// nothing fits and the block is not drawn at all: a wider block would wrap and the erase
+    /// arithmetic with it, leaving pieces of old frames behind.
     pub fn resize(&mut self, cols: usize, rows: usize) {
-        let width = cols.clamp(40, 500) as u16 - 1;
+        self.too_narrow = cols < MIN_COLS;
+        let width = cols.clamp(MIN_COLS, 500) as u16 - 1;
         self.term_rows = rows as u16;
         // rows == 0: width known but not height (Bazel's own resize RPC); keep the block height.
         let max_rows = if rows == 0 { 40 } else { (rows as u16 / 2).max(4) };
@@ -296,7 +304,7 @@ impl Renderer {
     }
 
     pub fn render(&mut self, s: &State, now: i64) -> String {
-        if s.command.is_none() || !s.command_builds() || s.phase == "finished" || s.finished {
+        if s.command.is_none() || !s.command_builds() || s.phase == "finished" || s.finished || self.too_narrow {
             return String::new();
         }
         self.tick += 1;
@@ -308,7 +316,7 @@ impl Renderer {
         let aborting = s.cancelling();
         let mut title = vec![
             Span::styled(format!(" {} ", spin), st(if aborting { ABORT } else { ACCENT })),
-            Span::styled(s.command.clone().unwrap_or_else(|| "bazel".into()), Style::new().add_modifier(Modifier::BOLD)),
+            Span::styled(s.command.clone().unwrap_or_else(|| "bazel".into()), bold(crate::text::REPORT_TEXT)),
             Span::styled(format!(" {}{} ", targets.join(" "), if s.args.len() > 3 { " …" } else { "" }), st(TITLE)),
         ];
         for p in ["loading", "analysis", "execution"] {
@@ -494,7 +502,7 @@ impl Renderer {
 
         // ---- mnemonics line
         let mut items: Vec<(&String, &(u64, u64))> = s.mnemonic_stats.iter().collect();
-        items.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+        items.sort_by(|a, b| b.1 .0.cmp(&a.1 .0).then(a.0.cmp(b.0)));
         let mut mnemonics: Vec<Span> = vec![Span::styled("done ", st(MUTED))];
         for (i, (m, (c, ms))) in items.iter().take(7).enumerate() {
             if i > 0 {
@@ -553,9 +561,9 @@ impl Renderer {
         if tree_lines > 0 {
             let mut tops: Vec<(&String, &crate::state::Node)> = s.tree.children.iter().collect();
             if self.tree_by_size {
-                tops.sort_by(|a, b| (b.1.done + b.1.running as u64).cmp(&(a.1.done + a.1.running as u64)).then(b.1.last_ms.cmp(&a.1.last_ms)));
+                tops.sort_by(|a, b| (b.1.done + b.1.running as u64).cmp(&(a.1.done + a.1.running as u64)).then(b.1.last_ms.cmp(&a.1.last_ms)).then(a.0.cmp(b.0)));
             } else {
-                tops.sort_by(|a, b| b.1.running.cmp(&a.1.running).then(b.1.last_ms.cmp(&a.1.last_ms)));
+                tops.sort_by(|a, b| b.1.running.cmp(&a.1.running).then(b.1.last_ms.cmp(&a.1.last_ms)).then(a.0.cmp(b.0)));
             }
             let mut cur: Vec<Span> = vec![Span::styled(if self.tree_by_size { "tree⇅" } else { "tree " }, st(MUTED))];
             let mut cur_w = 5;

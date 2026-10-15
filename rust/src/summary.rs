@@ -67,9 +67,9 @@ pub fn report(s: &State, now: i64, color: bool, width: usize) -> Report {
 
     rep.stderr.push_str(&completion_line(s, &sty, success));
     rep.stderr.push('\n');
-    rep.stderr.push_str(&verdict_line(s, now, &sty, success));
+    rep.stderr.push_str(&verdict_line(s, now, &sty, success, width));
     rep.stderr.push('\n');
-    if let Some(line) = sources_line(s, &sty) {
+    if let Some(line) = sources_line(s, &sty, width) {
         rep.stderr.push_str(&line);
         rep.stderr.push('\n');
     }
@@ -129,7 +129,35 @@ fn completion_line(s: &State, sty: &Sty, success: bool) -> String {
     }
 }
 
-fn verdict_line(s: &State, now: i64, sty: &Sty, success: bool) -> String {
+/// `head` (already styled, `head_w` columns wide) followed by `parts` joined with " · " in the
+/// muted colour, wrapped at `width` with continuation lines indented by `indent`. The report
+/// is printed once, so a wrapped line would not break anything, but it reads badly on an
+/// 80-column terminal where these lines do not fit.
+fn head_and_parts(sty: &Sty, head: &str, head_w: usize, parts: &[String], indent: usize, width: usize) -> String {
+    let mut out = String::from(head);
+    let mut col = head_w;
+    let mut line = String::new();
+    for p in parts {
+        let w = p.width();
+        if !line.is_empty() && col + 3 + w > width {
+            out.push_str(&sty.dim(&line));
+            out.push('\n');
+            out.push_str(&" ".repeat(indent));
+            line.clear();
+            col = indent;
+        }
+        if !line.is_empty() {
+            line.push_str(" · ");
+            col += 3;
+        }
+        line.push_str(p);
+        col += w;
+    }
+    out.push_str(&sty.dim(&line));
+    out
+}
+
+fn verdict_line(s: &State, now: i64, sty: &Sty, success: bool, width: usize) -> String {
     let total = (now - s.t0_ms) as f64 / 1000.0;
     let mut parts = Vec::new();
     let order = ["loading", "analysis", "execution", "finished"];
@@ -150,21 +178,24 @@ fn verdict_line(s: &State, now: i64, sty: &Sty, success: bool) -> String {
     }
     let tests_failed = s.tests.values().any(|t| rank(t) == 0);
     let mark = if success && !tests_failed { sty.rgb_bold("✔", OK) } else { sty.rgb_bold("✘", BAD) };
-    let command = sty.bold(s.command.as_deref().unwrap_or("build"));
+    let name = s.command.as_deref().unwrap_or("build");
+    let command = sty.bold(name);
     match s.cancelled_ms {
-        Some(t) => format!(
-            "{} {} {}  {}",
-            mark,
-            command,
-            sty.rgb(&format!("cancelled by Ctrl-C after {}, stopped in {}", fmt_duration((t - s.t0_ms) as f64 / 1000.0), fmt_duration((now - t).max(0) as f64 / 1000.0)), ABORT),
-            sty.dim(&parts.join(" · "))
-        ),
-        None => format!("{} {} {}  {}", mark, command, fmt_duration(total), sty.dim(&parts.join(" · "))),
+        Some(t) => {
+            let what = format!("cancelled by Ctrl-C after {}, stopped in {}", fmt_duration((t - s.t0_ms) as f64 / 1000.0), fmt_duration((now - t).max(0) as f64 / 1000.0));
+            let head = format!("{} {} {}  ", mark, command, sty.rgb(&what, ABORT));
+            head_and_parts(sty, &head, 1 + 1 + name.width() + 1 + what.width() + 2, &parts, 2, width)
+        }
+        None => {
+            let time = fmt_duration(total);
+            let head = format!("{} {} {}  ", mark, command, time);
+            head_and_parts(sty, &head, 1 + 1 + name.width() + 1 + time.width() + 2, &parts, 2, width)
+        }
     }
 }
 
 /// Where the actions came from: "actions 455 · 449 action cache · 3 remote cache · 2 local exec".
-fn sources_line(s: &State, sty: &Sty) -> Option<String> {
+fn sources_line(s: &State, sty: &Sty, width: usize) -> Option<String> {
     let total = s.cache_total();
     if total == 0 {
         return None;
@@ -176,7 +207,10 @@ fn sources_line(s: &State, sty: &Sty) -> Option<String> {
             parts.push(format!("{} {}", with_commas(n), src.name()));
         }
     }
-    Some(format!("  {} {}  {}", sty.dim("actions"), with_commas(total), sty.dim(&parts.join(" · "))))
+    let n = with_commas(total);
+    let head = format!("  {} {}  ", sty.dim("actions"), n);
+    let head_w = 2 + 7 + 1 + n.width() + 2;
+    Some(head_and_parts(sty, &head, head_w, &parts, head_w, width))
 }
 
 /// The build's page on the Build Event Service, as a link: "  results  https://…".

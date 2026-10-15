@@ -16,6 +16,41 @@ pub fn color_code(ext: u8, r: u8, g: u8, b: u8) -> String {
     }
 }
 
+/// Text without its escape sequences: CSI (`ESC [ … final`), OSC (`ESC ] … BEL` or `ESC \\`)
+/// and two-byte escapes are removed, everything else is kept.
+pub fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('[') => {
+                for d in it.by_ref() {
+                    if ('\x40'..='\x7e').contains(&d) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                while let Some(d) = it.next() {
+                    if d == '\x07' {
+                        break;
+                    }
+                    if d == '\x1b' && it.peek() == Some(&'\\') {
+                        it.next();
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 pub fn cube(r: u8, g: u8, b: u8) -> u8 {
     let q = |v: u8| ((v as f32 / 255.0 * 5.0).round()) as u8;
     16 + 36 * q(r) + 6 * q(g) + q(b)

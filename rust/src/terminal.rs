@@ -66,6 +66,9 @@ pub struct Terminal {
     bes_url: String,
     /// What `o` last did, for a short acknowledgement in the views.
     opened: Option<Opened>,
+    /// The engine's clock as of the last event or poll; log lines are stamped with it.
+    now_ms: i64,
+    injected: std::cell::RefCell<Vec<Key>>,
 }
 
 impl Terminal {
@@ -92,6 +95,8 @@ impl Terminal {
             client_pid,
             bes_url: String::new(),
             opened: None,
+            now_ms: 0,
+            injected: std::cell::RefCell::new(Vec::new()),
         };
         t.sync_size();
         t
@@ -117,7 +122,7 @@ impl Terminal {
         for p in parts {
             let p = p.trim_end_matches('\r');
             let p = p.rsplit('\r').next().unwrap_or(p);
-            self.log_lines.push(LogLine::now(p.to_string()));
+            self.log_lines.push(LogLine::at(self.now_ms, p.to_string()));
         }
         if self.log_lines.len() > 50_000 {
             self.log_lines.drain(..10_000);
@@ -132,7 +137,7 @@ impl Terminal {
     }
 
     /// The client's current window size: from its pty when we have it, else as reported by Bazel.
-    fn current_size(&self) -> Option<(u16, u16)> {
+    pub fn current_size(&self) -> Option<(u16, u16)> {
         self.pty.as_ref().and_then(|p| p.size()).or(self.reported)
     }
 
@@ -191,7 +196,15 @@ impl Terminal {
     }
 
     fn read_keys(&self) -> Vec<Key> {
-        self.pty.as_ref().map(|p| p.read_keys()).unwrap_or_default()
+        let mut keys = self.pty.as_ref().map(|p| p.read_keys()).unwrap_or_default();
+        keys.extend(self.injected.borrow_mut().drain(..));
+        keys
+    }
+
+    /// Keys to handle on the next poll as if typed at the client's terminal (tests and tools
+    /// without a pty).
+    pub fn press(&self, keys: Vec<Key>) {
+        self.injected.borrow_mut().extend(keys);
     }
 
     /// Bazel's own test statistics lines ("Executed 3 out of 4 tests: ..." and the test-size
@@ -231,8 +244,9 @@ impl Terminal {
         !self.bes_url.is_empty() && m.kind == "INFO" && m.text.trim_start().starts_with("Streaming build results to:")
     }
 
-    /// Formats a message the way Bazel's UiEventHandler prints it.
-    pub fn message(&mut self, m: &Message) {
+    /// Formats a message the way Bazel's UiEventHandler prints it; `at_ms` stamps the log line.
+    pub fn message(&mut self, m: &Message, at_ms: i64) {
+        self.now_ms = self.now_ms.max(at_ms);
         if self.is_bazel_test_stats(m) {
             return;
         }
@@ -306,6 +320,7 @@ impl Terminal {
     /// Flushes pending messages above the block and redraws the block if it changed; or, once a
     /// build is running on a terminal of known size, drives the full-screen dashboard.
     pub fn poll(&mut self, state: &State, now_ms: i64) -> Output {
+        self.now_ms = self.now_ms.max(now_ms);
         self.sync_size();
         let keys = self.read_keys();
         if self.help_mode {
@@ -414,6 +429,22 @@ impl Terminal {
         out
     }
 
+    /// Whether the full-screen dashboard (or the help finder) is on the alternate screen now.
+    pub fn on_alt_screen(&self) -> bool {
+        self.on_alt_screen
+    }
+
+    /// Lines of the inline block currently on screen (0 when none, or on the alternate screen).
+    pub fn block_lines(&self) -> usize {
+        self.drawn
+    }
+
+    /// The full-screen frame last drawn, as plain text rows (escape sequences removed); empty
+    /// off the alternate screen. What a terminal must show after the bytes of the last poll.
+    pub fn frame_text(&self) -> Vec<String> {
+        self.last_frame.iter().map(|l| crate::text::strip_ansi(l)).collect()
+    }
+
     /// Back to the normal screen, with everything that was printed meanwhile replayed in order.
     fn leave_alt_screen(&mut self, out: &mut Output) {
         if !self.on_alt_screen {
@@ -433,6 +464,7 @@ impl Terminal {
     /// End of command: leave the dashboard or clear the block, flush, add Bazel's completion line
     /// and the summary.
     pub fn finish(&mut self, state: &State, now_ms: i64) -> Output {
+        self.now_ms = self.now_ms.max(now_ms);
         let mut out = Output::default();
         if self.help_mode && !self.help_done {
             // Interrupted, or the index never arrived: hand out Bazel's own text.

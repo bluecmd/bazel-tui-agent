@@ -381,10 +381,10 @@ impl Dashboard {
 
         // ---- mnemonics and runners content
         let mut items: Vec<(&String, &(u64, u64))> = s.mnemonic_stats.iter().collect();
-        items.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+        items.sort_by(|a, b| b.1 .0.cmp(&a.1 .0).then(a.0.cmp(b.0)));
         let top = items.first().map(|i| i.1 .0).unwrap_or(1).max(1);
         let mut runners: Vec<(&String, &u64)> = s.runners.iter().filter(|(n, _)| Source::of_spawn(n, false, false) == Source::LocalExec).collect();
-        runners.sort_by(|a, b| b.1.cmp(a.1));
+        runners.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
 
         // ---- layout
         let tree_mode = self.tree_by_size;

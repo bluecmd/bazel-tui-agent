@@ -23,11 +23,6 @@ pub struct LogLine {
 }
 
 impl LogLine {
-    pub fn now(text: String) -> LogLine {
-        let at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
-        LogLine { at_ms, text }
-    }
-    #[cfg(test)]
     pub fn at(at_ms: i64, text: impl Into<String>) -> LogLine {
         LogLine { at_ms, text: text.into() }
     }

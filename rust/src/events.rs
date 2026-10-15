@@ -3,11 +3,11 @@
 //! Everything downstream (state, rendering, the trace file) consumes these types. The Java side
 //! only knows the wire format in `wire.rs`; it never sees these structs.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// One action as Bazel identifies it across its lifecycle events. `id` is the exec path of the
 /// primary output and is stable from `ActionStarted` to `ActionCompleted`.
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ActionRef {
     pub id: String,
     pub mnemonic: String,
@@ -17,7 +17,7 @@ pub struct ActionRef {
     pub description: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
     Loading,
@@ -26,7 +26,7 @@ pub enum Phase {
 }
 
 /// A message Bazel's console UI would print: INFO, WARNING, ERROR, DEBUG, STDOUT, STDERR, ...
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
     pub kind: String,
     pub text: String,
@@ -37,7 +37,7 @@ pub struct Message {
     pub stderr: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
     CommandStarted {
@@ -153,7 +153,7 @@ pub enum Event {
 }
 
 /// One spawn result inside an `ActionResult`.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SpawnBrief {
     pub runner: String,
     pub cache_hit: bool,
@@ -163,7 +163,7 @@ pub struct SpawnBrief {
 }
 
 /// An event with the server's wall-clock timestamp.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stamped {
     pub t_ms: i64,
     #[serde(flatten)]

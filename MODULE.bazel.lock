@@ -513,7 +513,7 @@
           "REPO_MAPPING:rules_rust+,bazel_tools bazel_tools",
           "REPO_MAPPING:rules_rust+,rules_cc rules_cc+",
           "FILE:@@//rust/Cargo.lock 043da8d1588e0f5a5a6417001938a60bb2bccf15d241b44f5ea960454790ed3d",
-          "FILE:@@//rust/Cargo.toml b95e43b278cba77d686b645dff7cc8b4bf245f0212ec8bd4901031d35877f2fe"
+          "FILE:@@//rust/Cargo.toml 3ab9a103c1bc237b077023735778b0f1bd4a66f212012ba25a9b6413e466c7da"
         ],
         "generatedRepoSpecs": {
           "crates": {
